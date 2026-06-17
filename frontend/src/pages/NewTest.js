@@ -4,12 +4,14 @@ import api, { formatApiError } from "@/lib/api";
 import { Rocket, AlertTriangle } from "lucide-react";
 
 const SCENARIOS = [
-  { value: "smoke", label: "SMOKE", desc: "Tiny 2-VU sanity check. Verifies endpoint works before bigger tests.", defaults: { vus: 2, dur: 30, rps: 5 } },
-  { value: "ramp", label: "RAMP", desc: "Gradually ramp up users to target, hold, then ramp down. Best general test.", defaults: { vus: 50, dur: 90, rps: 50 } },
-  { value: "spike", label: "SPIKE", desc: "Sudden traffic burst from baseline. Tests autoscale & cache.", defaults: { vus: 100, dur: 60, rps: 100 } },
+  { value: "smoke", label: "SMOKE", desc: "Tiny 2-VU sanity check. Verifies endpoint works.", defaults: { vus: 2, dur: 30, rps: 5 } },
+  { value: "ramp", label: "RAMP", desc: "Gradually ramp up to target, hold, ramp down. Best general test.", defaults: { vus: 50, dur: 90, rps: 50 } },
+  { value: "spike", label: "SPIKE", desc: "Sudden traffic burst. Tests autoscale & cache.", defaults: { vus: 100, dur: 60, rps: 100 } },
   { value: "soak", label: "SOAK", desc: "Constant load over long duration. Detects memory leaks.", defaults: { vus: 30, dur: 300, rps: 30 } },
   { value: "stress", label: "STRESS", desc: "Push past expected load to find breaking point.", defaults: { vus: 200, dur: 120, rps: 200 } },
-  { value: "breakpoint", label: "BREAKPOINT", desc: "Arrival-rate based; finds exact RPS where errors spike.", defaults: { vus: 500, dur: 120, rps: 500 } },
+  { value: "breakpoint", label: "BREAKPOINT", desc: "Arrival-rate; finds exact RPS where errors spike.", defaults: { vus: 500, dur: 120, rps: 500 } },
+  { value: "burst", label: "BURST", desc: "Short intense bursts. Tests cache hit/miss & autoscaler reaction.", defaults: { vus: 150, dur: 90, rps: 150 } },
+  { value: "mixed", label: "MIXED-PATH", desc: "Round-robin across multiple endpoints — realistic user pattern.", defaults: { vus: 50, dur: 120, rps: 50 } },
 ];
 
 export default function NewTest() {
@@ -17,6 +19,7 @@ export default function NewTest() {
   const nav = useNavigate();
   const [projects, setProjects] = useState([]);
   const [limits, setLimits] = useState({ max_rps: 5000, max_duration_sec: 600, max_vus: 2000 });
+  const [host, setHost] = useState(null);
   const [form, setForm] = useState({
     project_id: params.get("project") || "",
     name: "Test " + new Date().toISOString().slice(11, 16),
@@ -26,6 +29,7 @@ export default function NewTest() {
     target_rps: 50,
     duration_sec: 60,
     vus: 50,
+    extra_paths: "",
   });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,6 +43,7 @@ export default function NewTest() {
         setForm((f) => ({ ...f, project_id: verified[0].id }));
       }
       setLimits(s.data.limits);
+      setHost(s.data.host);
     })();
     // eslint-disable-next-line
   }, []);
@@ -57,7 +62,14 @@ export default function NewTest() {
     }
     setBusy(true);
     try {
-      const { data } = await api.post("/tests", form);
+      const payload = { ...form };
+      if (form.test_type === "mixed" && form.extra_paths) {
+        payload.extra_paths = form.extra_paths
+          .split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+      } else {
+        delete payload.extra_paths;
+      }
+      const { data } = await api.post("/tests", payload);
       nav(`/tests/${data.id}`);
     } catch (er) {
       setErr(formatApiError(er.response?.data?.detail) || er.message);
@@ -93,9 +105,27 @@ export default function NewTest() {
         <form onSubmit={submit} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* LEFT: scenarios */}
           <div className="lg:col-span-2 space-y-6">
+            {host && (
+              <div className="panel p-4" data-testid="host-banner">
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div className="font-mono-display text-[10px] tracking-widest text-gray-500 uppercase">
+                    // LOAD_GENERATOR_DETECTED
+                  </div>
+                  <div className="font-mono-display text-xs">
+                    <span className="text-gray-500">CPU:</span> <span className="text-[#39ff14]">{host.cpu_logical} cores</span>
+                    <span className="text-gray-700 mx-2">·</span>
+                    <span className="text-gray-500">RAM:</span> <span className="text-[#39ff14]">{(host.ram_total_mb / 1024).toFixed(1)}GB</span>
+                    <span className="text-gray-700 mx-2">·</span>
+                    <span className="text-gray-500">REC_MAX:</span> <span className="text-[#39ff14] font-bold">{host.recommended_max_rps.toLocaleString()} RPS</span>
+                    <span className="text-gray-700 mx-2">·</span>
+                    <span className="text-gray-500">MAX_VUs:</span> <span className="text-[#39ff14]">{host.recommended_max_vus.toLocaleString()}</span>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="panel p-5">
               <div className="font-mono-display text-[10px] tracking-widest text-gray-500 uppercase mb-4">// [01] SCENARIO</div>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {SCENARIOS.map((s) => (
                   <button
                     type="button"
@@ -115,6 +145,22 @@ export default function NewTest() {
                   </button>
                 ))}
               </div>
+              {form.test_type === "mixed" && (
+                <div className="mt-4">
+                  <label className="block font-mono-display text-[10px] tracking-widest text-gray-500 uppercase mb-1.5">&gt; extra paths (one per line or comma-separated)</label>
+                  <textarea
+                    data-testid="form-extra-paths-input"
+                    value={form.extra_paths}
+                    onChange={(e) => setForm({ ...form, extra_paths: e.target.value })}
+                    className="input-neon"
+                    rows={3}
+                    placeholder="/about&#10;/api/health&#10;/products"
+                  />
+                  <div className="font-mono-display text-[10px] text-gray-500 mt-1.5">
+                    // Each VU iteration picks one path at random (incl. the main target path).
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="panel p-5">

@@ -1,0 +1,43 @@
+{
+  "summary": "Re-ran Phase 1.5 expansion testing of Resilience Testing Dashboard. Updated pytest suite (TestStats now compares limits.max_rps to host.recommended_max_rps instead of hardcoded 5000/2000; safety-caps test now derives over-cap values from /api/system/info). Added 13 new tests covering /api/system/info, /api/system/live (auth + shape), 3-method verify (dns/http_file/html_meta) + invalid 400, burst & mixed scenarios, hardware-cap rejection on rps/vus, and split-count summary fields. Total backend: 32/32 pass. Full Phase-1 regression suite (19 tests) still green. Frontend UI verified live against https://check-enhance-1.preview.emergentagent.com: SystemMonitor in AppShell header (CPU/RAM/LOAD, polls every 2s — values changed across polls), host-banner on NewTest (8 cores · 31.3GB · 28,000 REC_MAX RPS · 4,000 MAX_VUs), all 8 scenario buttons present, scenario-mixed reveals form-extra-paths-input (and hides on other scenarios), Projects Verify modal exposes all 3 method tabs (verify-method-http_file/html_meta/dns) with matching copy buttons. TestRun split-summary test IDs verified in source. No blocking issues.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/projects/{id}/verify?method=dns", "issue": "When NXDOMAIN/NoAnswer raises an unhandled dns.resolver exception it could still bubble up as 500, but during this run the endpoint correctly returned 200/verified=false for all three methods against unresolvable test domains. Now wrapped in try/except per candidate — looks resilient."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "NewTest project dropdown", "issues": ["Carried over from iteration 1: <span> child of <option> hydration warning — non-blocking."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_resilience_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: clean up <span> inside <option> in /app/frontend/src/pages/NewTest.js (iteration 1 carry-over).",
+    "Optional: update /app/memory/test_credentials.md — Hard caps line still says MAX_RPS=5000/600s/2000 VUs; now MAX_RPS=200000, MAX_DURATION_SEC=900, MAX_VUS=20000 with hardware-detected soft caps (28,000 RPS, 4,000 VUs on this 8-vCPU host)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 985 lines — past the soft 700-line threshold. Split into modules (auth, projects, verify, k6_runner, system) before next phase.",
+    "live_host_stats() mutates a module-level LAST_NET dict without a lock. Concurrent /api/system/live polls from multiple clients could race and produce momentary negative or inflated net_tx_kbps/net_rx_kbps. Wrap in asyncio.Lock or compute deltas per-request without shared state.",
+    "psutil.cpu_percent(interval=None) returns 0 on the very first call per process — first poll after backend restart will report cpu_avg=0. Consider seeding with a one-shot psutil.cpu_percent(interval=0.1) at startup.",
+    "verify_project http_file/html_meta call httpx.AsyncClient with verify=False — silently accepting any TLS cert reduces verification value. Add a note in the response or surface the cert subject to the user.",
+    "K6 subprocess still unbounded (RUNNING_TESTS may grow without limit). With hardware-detected 28k RPS cap, a malicious user could launch many concurrent tests; add per-user concurrency cap (e.g., 2 active tests).",
+    "CORS_ORIGINS still '*' with allow_credentials=True in .env — browsers will reject credentialed XHR with wildcard. Must be explicit URL list before production.",
+    "No rate-limit / brute-force lockout on /api/auth/login (still missing from Phase 1 playbook recommendation)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_resilience_backend.py (updated TestStats + safety_caps; added TestSystemEndpoints, TestVerifyMethods, TestPhase15Scenarios — 13 new tests)"
+  ],
+  "success_rate": {"backend": "100% (32/32)", "frontend": "100% on tested flows"},
+  "test_credentials": "Admin: admin@resilience.lab / admin123 (seeded). Test users auto-registered per run with TEST_ prefix.",
+  "seed_data_creation": "Tests force-verify projects via pymongo (db.projects.updateOne {verified: true}). Created one verified example.com project under admin during UI run plus a TEST_-prefixed unverifiable domain for the multi-method verify suite. Safe to delete.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest at /app/backend/tests/test_resilience_backend.py now contains 32 tests across 6 classes (TestAuth, TestProjects, TestStats, TestSystemEndpoints, TestVerifyMethods, TestPhase15Scenarios, TestTestRunner). Run with: pytest /app/backend/tests/test_resilience_backend.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml. Suite takes ~70s (full k6 smoke run included). Hardware caps on this 8-vCPU/31GB host: recommended_max_rps=28000, recommended_max_vus=4000. UI: TestRun split-summary cards only render after a test completes — to validate live, run a smoke against example.com (verified) and watch /tests/:id. SystemMonitor first poll right after backend restart may show cpu_avg=0 due to psutil's interval=None behaviour (cosmetic only).",
+  "rca of the issue": "n/a — no blocking bugs; Phase 1.5 features fully verified."
+}

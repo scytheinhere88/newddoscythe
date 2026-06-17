@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { formatApiError } from "@/lib/api";
-import { Plus, Trash2, Shield, ShieldCheck, Copy, Check, X, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Shield, ShieldCheck, Copy, Check, X, RefreshCw, FileCode, Globe, Server } from "lucide-react";
+
+const METHODS = [
+  { id: "http_file", label: "HTTP FILE", icon: FileCode, time: "~30 sec", desc: "Upload a single text file to your webroot" },
+  { id: "html_meta", label: "HTML META", icon: Globe, time: "~1 min", desc: "Add one <meta> tag to your homepage" },
+  { id: "dns", label: "DNS TXT", icon: Server, time: "1-5 min", desc: "Add a DNS TXT record (most universal)" },
+];
 
 export default function Projects() {
   const [items, setItems] = useState([]);
@@ -10,9 +16,10 @@ export default function Projects() {
   const [form, setForm] = useState({ name: "", domain: "", description: "" });
   const [err, setErr] = useState("");
   const [verifyOf, setVerifyOf] = useState(null);
+  const [verifyMethod, setVerifyMethod] = useState("http_file");
   const [verifyResult, setVerifyResult] = useState(null);
   const [verifyBusy, setVerifyBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -44,14 +51,14 @@ export default function Projects() {
     load();
   };
 
-  const openVerify = (p) => { setVerifyOf(p); setVerifyResult(null); };
+  const openVerify = (p) => { setVerifyOf(p); setVerifyResult(null); setVerifyMethod("http_file"); };
   const closeVerify = () => { setVerifyOf(null); setVerifyResult(null); };
 
   const runVerify = async () => {
     setVerifyBusy(true);
     setVerifyResult(null);
     try {
-      const { data } = await api.post(`/projects/${verifyOf.id}/verify`);
+      const { data } = await api.post(`/projects/${verifyOf.id}/verify?method=${verifyMethod}`);
       setVerifyResult(data);
       if (data.verified) {
         setTimeout(() => { load(); closeVerify(); }, 1500);
@@ -63,10 +70,10 @@ export default function Projects() {
     }
   };
 
-  const copyToken = (token) => {
-    navigator.clipboard.writeText(token);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+  const copyText = (text, key) => {
+    navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(""), 1500);
   };
 
   return (
@@ -78,7 +85,7 @@ export default function Projects() {
             projects<span className="cursor-blink" />
           </h1>
           <p className="text-gray-500 font-body mt-2 text-sm">
-            Register and verify the domains you own. Verification is required before testing.
+            Register and verify the domains you own. 3 quick verification methods — pick the easiest for your stack.
           </p>
         </div>
         <button onClick={() => setOpen(true)} className="btn-neon" data-testid="projects-add-button">
@@ -159,117 +166,136 @@ export default function Projects() {
               <h2 className="font-heading text-2xl text-white">
                 <span className="text-[#39ff14]">$</span> mkdir project
               </h2>
-              <button onClick={() => setOpen(false)} className="text-gray-500 hover:text-white">
-                <X size={18} />
-              </button>
+              <button onClick={() => setOpen(false)} className="text-gray-500 hover:text-white"><X size={18} /></button>
             </div>
             <form onSubmit={create} className="space-y-4">
               <div>
                 <label className="block font-mono-display text-[10px] tracking-widest text-gray-500 uppercase mb-1.5">&gt; project name</label>
-                <input
-                  data-testid="project-name-input"
-                  required
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  className="input-neon"
-                  placeholder="My Production Site"
-                />
+                <input data-testid="project-name-input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input-neon" placeholder="My Production Site" />
               </div>
               <div>
                 <label className="block font-mono-display text-[10px] tracking-widest text-gray-500 uppercase mb-1.5">&gt; domain (without protocol)</label>
-                <input
-                  data-testid="project-domain-input"
-                  required
-                  value={form.domain}
-                  onChange={(e) => setForm({ ...form, domain: e.target.value })}
-                  className="input-neon"
-                  placeholder="example.com"
-                />
+                <input data-testid="project-domain-input" required value={form.domain} onChange={(e) => setForm({ ...form, domain: e.target.value })} className="input-neon" placeholder="example.com" />
               </div>
               <div>
                 <label className="block font-mono-display text-[10px] tracking-widest text-gray-500 uppercase mb-1.5">&gt; description (optional)</label>
-                <input
-                  data-testid="project-description-input"
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  className="input-neon"
-                  placeholder="Notes about this project..."
-                />
+                <input data-testid="project-description-input" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="input-neon" placeholder="Notes about this project..." />
               </div>
-              {err && (
-                <div className="badge-error block px-3 py-2 font-mono-display text-xs" data-testid="project-create-error">
-                  ! {err}
-                </div>
-              )}
+              {err && <div className="badge-error block px-3 py-2 font-mono-display text-xs" data-testid="project-create-error">! {err}</div>}
               <div className="flex gap-3 pt-2">
                 <button type="button" onClick={() => setOpen(false)} className="btn-ghost flex-1">CANCEL</button>
-                <button type="submit" className="btn-neon flex-1 justify-center" data-testid="project-create-submit">
-                  CREATE →
-                </button>
+                <button type="submit" className="btn-neon flex-1 justify-center" data-testid="project-create-submit">CREATE →</button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* Verify modal */}
+      {/* Verify modal — multi-method */}
       {verifyOf && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={closeVerify}>
-          <div className="panel max-w-2xl w-full p-6 fade-up" onClick={(e) => e.stopPropagation()} data-testid="project-verify-modal">
+          <div className="panel max-w-2xl w-full p-6 fade-up max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()} data-testid="project-verify-modal">
             <div className="flex items-center justify-between mb-5">
-              <h2 className="font-heading text-2xl text-white">
-                <span className="text-[#39ff14]">$</span> verify ownership
-              </h2>
-              <button onClick={closeVerify} className="text-gray-500 hover:text-white">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="font-mono-display text-xs text-gray-500 mb-2">// DOMAIN: <span className="text-white">{verifyOf.domain}</span></div>
-
-            <ol className="space-y-4 mb-5">
-              <li className="font-body text-gray-300">
-                <span className="font-mono-display text-[#39ff14] mr-2">[01]</span>
-                Open your DNS provider for <span className="text-white">{verifyOf.domain}</span>.
-              </li>
-              <li className="font-body text-gray-300">
-                <span className="font-mono-display text-[#39ff14] mr-2">[02]</span>
-                Create a new <span className="text-white">TXT</span> record:
-              </li>
-            </ol>
-
-            <div className="terminal mb-4" data-testid="verify-token-block">
-              <div><span className="text-gray-500">type:</span> TXT</div>
-              <div><span className="text-gray-500">host:</span> _resilience.{verifyOf.domain}</div>
-              <div className="flex items-start justify-between gap-3 mt-1">
-                <div className="break-all">
-                  <span className="text-gray-500">value:</span> {verifyOf.verify_token}
-                </div>
-                <button
-                  onClick={() => copyToken(verifyOf.verify_token)}
-                  className="btn-ghost flex-shrink-0"
-                  data-testid="verify-copy-token-btn"
-                >
-                  {copied ? <Check size={12} /> : <Copy size={12} />}
-                  {copied ? "COPIED" : "COPY"}
-                </button>
+              <div>
+                <h2 className="font-heading text-2xl text-white"><span className="text-[#39ff14]">$</span> verify ownership</h2>
+                <div className="font-mono-display text-xs text-gray-500 mt-1">// DOMAIN: <span className="text-white">{verifyOf.domain}</span></div>
               </div>
+              <button onClick={closeVerify} className="text-gray-500 hover:text-white"><X size={18} /></button>
             </div>
 
-            <ol className="space-y-3 mb-5">
-              <li className="font-body text-gray-300">
-                <span className="font-mono-display text-[#39ff14] mr-2">[03]</span>
-                Save and wait 1–5 minutes for DNS propagation.
-              </li>
-              <li className="font-body text-gray-300">
-                <span className="font-mono-display text-[#39ff14] mr-2">[04]</span>
-                Click verify below — we&apos;ll check the TXT record.
-              </li>
-            </ol>
+            {/* Method tabs */}
+            <div className="grid grid-cols-3 gap-2 mb-5" data-testid="verify-method-tabs">
+              {METHODS.map((m) => {
+                const Icon = m.icon;
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => { setVerifyMethod(m.id); setVerifyResult(null); }}
+                    data-testid={`verify-method-${m.id}`}
+                    className={`p-3 border text-left transition-all ${
+                      verifyMethod === m.id
+                        ? "border-[#39ff14] bg-[#0a0a0a] shadow-[0_0_16px_rgba(57,255,20,0.1)]"
+                        : "border-[#1f2937] bg-[#0a0a0a] hover:border-gray-500"
+                    }`}
+                  >
+                    <Icon size={14} className={verifyMethod === m.id ? "text-[#39ff14]" : "text-gray-500"} strokeWidth={1.5} />
+                    <div className={`font-mono-display text-xs tracking-widest mt-2 ${verifyMethod === m.id ? "text-[#39ff14]" : "text-gray-300"}`}>{m.label}</div>
+                    <div className="text-[10px] text-gray-500 mt-1">{m.time} · {m.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Instructions per method */}
+            {verifyMethod === "http_file" && (
+              <div className="mb-5">
+                <ol className="space-y-3 mb-3">
+                  <li className="font-body text-gray-300">
+                    <span className="font-mono-display text-[#39ff14] mr-2">[01]</span>
+                    Create a file at this URL (path: <span className="font-mono-display text-white">/.well-known/resilience-challenge.txt</span>):
+                  </li>
+                </ol>
+                <div className="terminal mb-3">
+                  <div><span className="text-gray-500">url:</span> https://{verifyOf.domain}/.well-known/resilience-challenge.txt</div>
+                </div>
+                <ol className="space-y-3 mb-3">
+                  <li className="font-body text-gray-300">
+                    <span className="font-mono-display text-[#39ff14] mr-2">[02]</span>
+                    File content (a single line, just paste the token):
+                  </li>
+                </ol>
+                <div className="terminal flex items-start justify-between gap-3" data-testid="verify-http-token-block">
+                  <div className="break-all">{verifyOf.verify_token}</div>
+                  <button onClick={() => copyText(verifyOf.verify_token, "http")} className="btn-ghost flex-shrink-0" data-testid="verify-http-copy-btn">
+                    {copied === "http" ? <Check size={12} /> : <Copy size={12} />}
+                    {copied === "http" ? "COPIED" : "COPY"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {verifyMethod === "html_meta" && (
+              <div className="mb-5">
+                <ol className="space-y-3 mb-3">
+                  <li className="font-body text-gray-300">
+                    <span className="font-mono-display text-[#39ff14] mr-2">[01]</span>
+                    Add this <span className="font-mono-display text-white">&lt;meta&gt;</span> tag inside the <span className="font-mono-display text-white">&lt;head&gt;</span> of <span className="text-white">https://{verifyOf.domain}/</span>:
+                  </li>
+                </ol>
+                <div className="terminal flex items-start justify-between gap-3" data-testid="verify-html-meta-block">
+                  <div className="break-all">{`<meta name="resilience-verify" content="${verifyOf.verify_token}">`}</div>
+                  <button onClick={() => copyText(`<meta name="resilience-verify" content="${verifyOf.verify_token}">`, "meta")} className="btn-ghost flex-shrink-0" data-testid="verify-html-copy-btn">
+                    {copied === "meta" ? <Check size={12} /> : <Copy size={12} />}
+                    {copied === "meta" ? "COPIED" : "COPY"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {verifyMethod === "dns" && (
+              <div className="mb-5">
+                <ol className="space-y-3 mb-3">
+                  <li className="font-body text-gray-300">
+                    <span className="font-mono-display text-[#39ff14] mr-2">[01]</span>
+                    In your DNS provider for <span className="text-white">{verifyOf.domain}</span>, add a new TXT record:
+                  </li>
+                </ol>
+                <div className="terminal" data-testid="verify-dns-block">
+                  <div><span className="text-gray-500">type:</span> TXT</div>
+                  <div><span className="text-gray-500">host:</span> _resilience.{verifyOf.domain}</div>
+                  <div className="flex items-start justify-between gap-3 mt-1">
+                    <div className="break-all"><span className="text-gray-500">value:</span> {verifyOf.verify_token}</div>
+                    <button onClick={() => copyText(verifyOf.verify_token, "dns")} className="btn-ghost flex-shrink-0" data-testid="verify-dns-copy-btn">
+                      {copied === "dns" ? <Check size={12} /> : <Copy size={12} />}
+                      {copied === "dns" ? "COPIED" : "COPY"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {verifyResult && (
-              <div className={`mb-4 p-3 font-mono-display text-xs ${
-                verifyResult.verified ? "badge-neon" : "badge-error"
-              } block`} data-testid="verify-result">
+              <div className={`mb-4 p-3 font-mono-display text-xs ${verifyResult.verified ? "badge-neon" : "badge-error"} block`} data-testid="verify-result">
                 {verifyResult.verified ? "✓ " : "✗ "}{verifyResult.message}
                 {verifyResult.records_seen && verifyResult.records_seen.length > 0 && (
                   <div className="mt-2 text-gray-400">
@@ -282,14 +308,9 @@ export default function Projects() {
 
             <div className="flex gap-3">
               <button onClick={closeVerify} className="btn-ghost flex-1">CLOSE</button>
-              <button
-                onClick={runVerify}
-                disabled={verifyBusy}
-                className="btn-neon flex-1 justify-center"
-                data-testid="verify-run-btn"
-              >
+              <button onClick={runVerify} disabled={verifyBusy} className="btn-neon flex-1 justify-center" data-testid="verify-run-btn">
                 <RefreshCw size={12} className={verifyBusy ? "animate-spin" : ""} />
-                {verifyBusy ? "CHECKING..." : "RUN_DNS_CHECK"}
+                {verifyBusy ? "CHECKING..." : "RUN_CHECK"}
               </button>
             </div>
           </div>

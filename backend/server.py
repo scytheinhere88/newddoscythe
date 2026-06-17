@@ -13,6 +13,8 @@ import secrets
 import asyncio
 import logging
 import tempfile
+import psutil
+import httpx
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 
@@ -31,6 +33,68 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 MAX_RPS = int(os.environ.get("MAX_RPS", 5000))
 MAX_DURATION_SEC = int(os.environ.get("MAX_DURATION_SEC", 600))
 MAX_VUS = int(os.environ.get("MAX_VUS", 2000))
+
+# ---------------------------------------------------------------------------
+# System detection — auto-tune RPS cap based on host resources
+# ---------------------------------------------------------------------------
+def detect_host_specs() -> dict:
+    cpu_logical = psutil.cpu_count(logical=True) or 1
+    cpu_physical = psutil.cpu_count(logical=False) or cpu_logical
+    try:
+        freq = psutil.cpu_freq()
+        cpu_mhz = round(freq.current) if freq else 0
+    except Exception:
+        cpu_mhz = 0
+    vm = psutil.virtual_memory()
+    # Heuristic: k6 sustains ~3000-5000 HTTPS RPS per logical core on modern x86/arm
+    # We use 3500 as a safe estimate and cap at MAX_RPS env (which acts as final hard ceiling)
+    recommended = min(MAX_RPS, cpu_logical * 3500)
+    recommended_vus = min(MAX_VUS, cpu_logical * 500)
+    return {
+        "cpu_logical": cpu_logical,
+        "cpu_physical": cpu_physical,
+        "cpu_mhz": cpu_mhz,
+        "ram_total_mb": round(vm.total / 1024 / 1024),
+        "platform": os.uname().sysname + " " + os.uname().release,
+        "recommended_max_rps": recommended,
+        "recommended_max_vus": recommended_vus,
+        "hard_cap_rps": MAX_RPS,
+        "hard_cap_duration_sec": MAX_DURATION_SEC,
+        "hard_cap_vus": MAX_VUS,
+    }
+
+HOST_SPECS = detect_host_specs()
+LAST_NET = {"bytes_sent": 0, "bytes_recv": 0, "ts": 0}
+
+def live_host_stats() -> dict:
+    cpu_per_core = psutil.cpu_percent(interval=None, percpu=True)
+    vm = psutil.virtual_memory()
+    la1, la5, la15 = os.getloadavg()
+    net = psutil.net_io_counters()
+    now = datetime.now(timezone.utc).timestamp()
+    if LAST_NET["ts"] > 0:
+        dt = max(0.1, now - LAST_NET["ts"])
+        net_tx_kbps = (net.bytes_sent - LAST_NET["bytes_sent"]) * 8 / 1000 / dt
+        net_rx_kbps = (net.bytes_recv - LAST_NET["bytes_recv"]) * 8 / 1000 / dt
+    else:
+        net_tx_kbps = net_rx_kbps = 0
+    LAST_NET["bytes_sent"] = net.bytes_sent
+    LAST_NET["bytes_recv"] = net.bytes_recv
+    LAST_NET["ts"] = now
+    return {
+        "cpu_avg": round(sum(cpu_per_core) / len(cpu_per_core), 1) if cpu_per_core else 0,
+        "cpu_per_core": [round(x, 1) for x in cpu_per_core],
+        "ram_used_mb": round(vm.used / 1024 / 1024),
+        "ram_total_mb": round(vm.total / 1024 / 1024),
+        "ram_pct": round(vm.percent, 1),
+        "load_1": round(la1, 2),
+        "load_5": round(la5, 2),
+        "load_15": round(la15, 2),
+        "net_tx_kbps": round(net_tx_kbps, 1),
+        "net_rx_kbps": round(net_rx_kbps, 1),
+        "running_tests": len(RUNNING_TESTS),
+        "ts": int(now),
+    }
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -127,7 +191,7 @@ class ProjectIn(BaseModel):
 class ScenarioIn(BaseModel):
     project_id: str
     name: str = Field(min_length=1, max_length=80)
-    test_type: Literal["smoke", "ramp", "spike", "soak", "stress", "breakpoint"]
+    test_type: Literal["smoke", "ramp", "spike", "soak", "stress", "breakpoint", "burst", "mixed"]
     target_path: str = Field(default="/", max_length=255)
     method: Literal["GET", "POST", "HEAD"] = "GET"
     target_rps: int = Field(ge=1, le=MAX_RPS)
@@ -135,6 +199,7 @@ class ScenarioIn(BaseModel):
     vus: int = Field(ge=1, le=MAX_VUS)
     headers: Optional[dict] = None
     body: Optional[str] = None
+    extra_paths: Optional[List[str]] = None  # for "mixed" scenario
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -281,43 +346,113 @@ async def delete_project(project_id: str, user: dict = Depends(get_current_user)
     return {"ok": True}
 
 @api.post("/projects/{project_id}/verify")
-async def verify_project(project_id: str, user: dict = Depends(get_current_user)):
+async def verify_project(project_id: str, method: str = "dns",
+                         user: dict = Depends(get_current_user)):
+    """Verify ownership via one of three methods:
+       - method=dns        → TXT record at _resilience.<domain>
+       - method=http_file  → GET https://<domain>/.well-known/resilience-challenge.txt
+       - method=html_meta  → <meta name="resilience-verify" content="<token>"> in homepage
+    """
     doc = await db.projects.find_one({"_id": ObjectId(project_id), "user_id": user["id"]})
     if not doc:
         raise HTTPException(404, "Project not found")
     if doc.get("verified"):
-        return {"verified": True, "message": "Already verified"}
+        return {"verified": True, "method": doc.get("verify_method"), "message": "Already verified"}
     domain = doc["domain"]
     token = doc["verify_token"]
-    resolver = dns.resolver.Resolver()
-    resolver.lifetime = 8.0
-    candidates = [f"_resilience.{domain}", domain]
-    found = False
     records_seen: list[str] = []
-    for candidate in candidates:
-        try:
-            answers = resolver.resolve(candidate, "TXT")
-            for r in answers:
-                txt = b"".join(r.strings).decode("utf-8", errors="ignore")
-                records_seen.append(f"{candidate}: {txt}")
-                if token in txt:
-                    found = True
-                    break
-        except Exception as e:
-            logger.info(f"DNS lookup for {candidate} failed: {e}")
-            continue
-        if found:
-            break
-    if not found:
+
+    if method == "dns":
+        resolver = dns.resolver.Resolver()
+        resolver.lifetime = 8.0
+        for candidate in [f"_resilience.{domain}", domain]:
+            try:
+                answers = resolver.resolve(candidate, "TXT")
+                for r in answers:
+                    txt = b"".join(r.strings).decode("utf-8", errors="ignore")
+                    records_seen.append(f"{candidate}: {txt}")
+                    if token in txt:
+                        await db.projects.update_one({"_id": doc["_id"]},
+                            {"$set": {"verified": True, "verify_method": "dns"}})
+                        return {"verified": True, "method": "dns", "message": "DNS TXT verified"}
+            except Exception as e:
+                logger.info(f"DNS lookup for {candidate} failed: {e}")
         return {
-            "verified": False,
-            "message": "TXT record not found yet (DNS may take time to propagate).",
+            "verified": False, "method": "dns",
+            "message": "TXT record not found (DNS may take time to propagate).",
             "expected_token": token,
             "expected_host": f"_resilience.{domain}",
             "records_seen": records_seen,
         }
-    await db.projects.update_one({"_id": doc["_id"]}, {"$set": {"verified": True}})
-    return {"verified": True, "message": "Domain ownership verified"}
+
+    elif method == "http_file":
+        url = f"https://{domain}/.well-known/resilience-challenge.txt"
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, verify=False) as h:
+                r = await h.get(url, headers={"User-Agent": "ResilienceLab-Verifier/1.0"})
+            records_seen.append(f"{url} → HTTP {r.status_code}")
+            if r.status_code == 200 and token in r.text:
+                await db.projects.update_one({"_id": doc["_id"]},
+                    {"$set": {"verified": True, "verify_method": "http_file"}})
+                return {"verified": True, "method": "http_file", "message": "HTTP file verified"}
+            # Also try http:// fallback
+            url2 = f"http://{domain}/.well-known/resilience-challenge.txt"
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, verify=False) as h:
+                r2 = await h.get(url2, headers={"User-Agent": "ResilienceLab-Verifier/1.0"})
+            records_seen.append(f"{url2} → HTTP {r2.status_code}")
+            if r2.status_code == 200 and token in r2.text:
+                await db.projects.update_one({"_id": doc["_id"]},
+                    {"$set": {"verified": True, "verify_method": "http_file"}})
+                return {"verified": True, "method": "http_file", "message": "HTTP file verified"}
+        except Exception as e:
+            records_seen.append(f"Error: {e}")
+        return {
+            "verified": False, "method": "http_file",
+            "message": "Challenge file not found or token mismatch.",
+            "expected_token": token,
+            "expected_url": url,
+            "instructions": (
+                f"Create a file at: {url}\n"
+                f"Content (single line): {token}"
+            ),
+            "records_seen": records_seen,
+        }
+
+    elif method == "html_meta":
+        url = f"https://{domain}/"
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, verify=False) as h:
+                r = await h.get(url, headers={"User-Agent": "ResilienceLab-Verifier/1.0"})
+            records_seen.append(f"{url} → HTTP {r.status_code}, {len(r.text)} bytes")
+            if r.status_code == 200:
+                meta_pattern = (
+                    rf'<meta\s+[^>]*name=["\']resilience-verify["\']'
+                    rf'[^>]*content=["\']{re.escape(token)}["\']'
+                )
+                alt_pattern = (
+                    rf'<meta\s+[^>]*content=["\']{re.escape(token)}["\']'
+                    rf'[^>]*name=["\']resilience-verify["\']'
+                )
+                if re.search(meta_pattern, r.text, re.IGNORECASE) or \
+                   re.search(alt_pattern, r.text, re.IGNORECASE):
+                    await db.projects.update_one({"_id": doc["_id"]},
+                        {"$set": {"verified": True, "verify_method": "html_meta"}})
+                    return {"verified": True, "method": "html_meta", "message": "Meta tag verified"}
+        except Exception as e:
+            records_seen.append(f"Error: {e}")
+        return {
+            "verified": False, "method": "html_meta",
+            "message": "Meta tag not found in homepage.",
+            "expected_token": token,
+            "expected_url": url,
+            "instructions": (
+                f'Add this inside <head> of {url}:\n'
+                f'<meta name="resilience-verify" content="{token}">'
+            ),
+            "records_seen": records_seen,
+        }
+    else:
+        raise HTTPException(400, "method must be one of: dns, http_file, html_meta")
 
 # ---------------------------------------------------------------------------
 # k6 runner
@@ -332,13 +467,24 @@ const headers = __HEADERS__;
 const body = __BODY__;
 const targetUrl = __URL__;
 const method = __METHOD__;
+const extraPaths = __EXTRA_PATHS__;
+const baseOrigin = __ORIGIN__;
+
+function pickUrl() {
+  if (extraPaths && extraPaths.length > 0) {
+    const p = extraPaths[Math.floor(Math.random() * extraPaths.length)];
+    return baseOrigin + (p.startsWith('/') ? p : '/' + p);
+  }
+  return targetUrl;
+}
 
 export default function () {
+  const url = pickUrl();
   let res;
   if (method === 'GET' || method === 'HEAD') {
-    res = http.request(method, targetUrl, null, { headers });
+    res = http.request(method, url, null, { headers });
   } else {
-    res = http.request(method, targetUrl, body || null, { headers });
+    res = http.request(method, url, body || null, { headers });
   }
   check(res, { 'status<500': (r) => r.status < 500 });
 }
@@ -387,18 +533,37 @@ def build_k6_options(scenario: ScenarioIn) -> dict:
                 "stages": [{"duration": dur, "target": rps}],
             }},
         }
+    if t == "burst":
+        # Short intense bursts to test cache hit/miss & autoscaler
+        return {"stages": [
+            {"duration": "15s", "target": max(2, int(vus * 0.1))},
+            {"duration": "5s", "target": vus},
+            {"duration": "10s", "target": max(2, int(vus * 0.1))},
+            {"duration": "5s", "target": vus},
+            {"duration": f"{max(10, scenario.duration_sec - 35)}s", "target": max(2, int(vus * 0.1))},
+        ]}
+    if t == "mixed":
+        # mixed-endpoint scenario uses default constant-VU
+        return {"vus": vus, "duration": dur}
     return {"vus": vus, "duration": dur}
 
 def render_k6_script(scenario: ScenarioIn, full_url: str) -> str:
     options = build_k6_options(scenario)
     options.setdefault("summaryTrendStats", ["min", "med", "avg", "p(90)", "p(95)", "p(99)", "max"])
     options.setdefault("discardResponseBodies", True)
+    # Origin for mixed-endpoint scenario
+    from urllib.parse import urlparse
+    parsed = urlparse(full_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    extra_paths = scenario.extra_paths or []
     return (K6_SCRIPT_TEMPLATE
             .replace("__OPTIONS__", json.dumps(options))
             .replace("__HEADERS__", json.dumps(scenario.headers or {}))
             .replace("__BODY__", json.dumps(scenario.body or ""))
             .replace("__URL__", json.dumps(full_url))
-            .replace("__METHOD__", json.dumps(scenario.method)))
+            .replace("__METHOD__", json.dumps(scenario.method))
+            .replace("__ORIGIN__", json.dumps(origin))
+            .replace("__EXTRA_PATHS__", json.dumps(extra_paths)))
 
 async def stream_k6_output(test_id: str, proc: asyncio.subprocess.Process):
     cur_bucket = None
@@ -506,7 +671,9 @@ async def finalize_test(test_id: str, status: str, log_tail: str = ""):
         summary = {"total_requests": 0, "total_errors": 0, "peak_rps": 0,
                    "avg_rps": 0, "p50": 0, "p95": 0, "p99": 0,
                    "error_rate": 0.0, "duration_sec": 0, "breakpoint_rps": 0,
-                   "status_codes": {}}
+                   "status_codes": {}, "success_count": 0,
+                   "client_error_count": 0, "server_error_count": 0,
+                   "network_error_count": 0}
     else:
         total_req = sum(p["rps"] for p in points)
         total_err = sum(p["errors"] for p in points)
@@ -519,6 +686,22 @@ async def finalize_test(test_id: str, status: str, log_tail: str = ""):
         for p in points:
             for k, v in (p.get("status_codes") or {}).items():
                 codes_agg[k] = codes_agg.get(k, 0) + v
+        # Split codes into success / client / server / network
+        success_count = 0
+        client_error_count = 0
+        server_error_count = 0
+        network_error_count = 0
+        for code, count in codes_agg.items():
+            try:
+                c = int(code)
+                if 200 <= c < 400:
+                    success_count += count
+                elif 400 <= c < 500:
+                    client_error_count += count
+                elif c >= 500:
+                    server_error_count += count
+            except ValueError:
+                network_error_count += count  # "0" / "?" = connection errors
         breakpoint_rps = 0
         for p in points:
             if p["rps"] > 0 and p["errors"] / max(1, p["rps"]) > 0.10:
@@ -531,6 +714,10 @@ async def finalize_test(test_id: str, status: str, log_tail: str = ""):
             "error_rate": round((total_err / max(1, total_req)) * 100, 2),
             "duration_sec": len(points), "breakpoint_rps": breakpoint_rps,
             "status_codes": codes_agg,
+            "success_count": success_count,
+            "client_error_count": client_error_count,
+            "server_error_count": server_error_count,
+            "network_error_count": network_error_count,
         }
     recos = generate_recommendations(summary)
     await db.tests.update_one(
@@ -592,12 +779,15 @@ def generate_recommendations(s: dict) -> list:
 # ---------------------------------------------------------------------------
 @api.post("/tests")
 async def create_test(scenario: ScenarioIn, user: dict = Depends(get_current_user)):
-    if scenario.target_rps > MAX_RPS:
-        raise HTTPException(400, f"target_rps > {MAX_RPS}")
+    # Use hardware-detected caps as the effective ceiling
+    eff_max_rps = HOST_SPECS["recommended_max_rps"]
+    eff_max_vus = HOST_SPECS["recommended_max_vus"]
+    if scenario.target_rps > eff_max_rps:
+        raise HTTPException(400, f"target_rps ({scenario.target_rps}) exceeds hardware cap ({eff_max_rps})")
     if scenario.duration_sec > MAX_DURATION_SEC:
         raise HTTPException(400, f"duration_sec > {MAX_DURATION_SEC}")
-    if scenario.vus > MAX_VUS:
-        raise HTTPException(400, f"vus > {MAX_VUS}")
+    if scenario.vus > eff_max_vus:
+        raise HTTPException(400, f"vus ({scenario.vus}) exceeds hardware cap ({eff_max_vus})")
 
     proj = await db.projects.find_one({"_id": ObjectId(scenario.project_id), "user_id": user["id"]})
     if not proj:
@@ -745,8 +935,28 @@ async def stats_overview(user: dict = Depends(get_current_user)):
         "peak_rps_recent": peak_rps,
         "avg_rps_recent": round(sum(avg_rps_acc) / len(avg_rps_acc), 2) if avg_rps_acc else 0,
         "avg_error_rate_recent": round(sum(err_rate_acc) / len(err_rate_acc), 2) if err_rate_acc else 0,
-        "limits": {"max_rps": MAX_RPS, "max_duration_sec": MAX_DURATION_SEC, "max_vus": MAX_VUS},
+        "limits": {
+            "max_rps": HOST_SPECS["recommended_max_rps"],
+            "max_duration_sec": MAX_DURATION_SEC,
+            "max_vus": HOST_SPECS["recommended_max_vus"],
+            "hard_cap_rps": MAX_RPS,
+            "hard_cap_vus": MAX_VUS,
+        },
+        "host": HOST_SPECS,
     }
+
+# ---------------------------------------------------------------------------
+# System monitoring
+# ---------------------------------------------------------------------------
+@api.get("/system/info")
+async def system_info(_u: dict = Depends(get_current_user)):
+    """Static host specs + recommended caps based on hardware."""
+    return HOST_SPECS
+
+@api.get("/system/live")
+async def system_live(_u: dict = Depends(get_current_user)):
+    """Live CPU/RAM/network/load stats — poll every 1-2s from frontend."""
+    return live_host_stats()
 
 @api.get("/")
 async def root():

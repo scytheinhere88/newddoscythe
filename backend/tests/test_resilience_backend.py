@@ -175,16 +175,202 @@ class TestStats:
         assert r.status_code == 200
         body = r.json()
         for k in ("projects", "verified_projects", "tests_total", "tests_running",
-                  "peak_rps_recent", "limits"):
+                  "peak_rps_recent", "limits", "host"):
             assert k in body
         lim = body["limits"]
-        assert lim["max_rps"] == 5000
-        assert lim["max_duration_sec"] == 600
-        assert lim["max_vus"] == 2000
+        host = body["host"]
+        # Phase 1.5: limits now driven by HOST_SPECS (hardware detection)
+        assert lim["max_rps"] == host["recommended_max_rps"], \
+            f"limits.max_rps {lim['max_rps']} != host.recommended_max_rps {host['recommended_max_rps']}"
+        assert lim["max_vus"] == host["recommended_max_vus"]
+        assert lim["max_rps"] > 0
+        assert lim["max_vus"] > 0
+        # host shape
+        for k in ("cpu_logical", "cpu_physical", "ram_total_mb", "platform",
+                  "recommended_max_rps", "recommended_max_vus",
+                  "hard_cap_rps", "hard_cap_duration_sec", "hard_cap_vus"):
+            assert k in host, f"host missing {k}"
 
     def test_stats_requires_auth(self):
         r = requests.get(f"{API}/stats/overview", timeout=15)
         assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5: System info & live stats
+# ---------------------------------------------------------------------------
+class TestSystemEndpoints:
+    def test_system_info_requires_auth(self):
+        r = requests.get(f"{API}/system/info", timeout=15)
+        assert r.status_code == 401
+
+    def test_system_info_shape(self, admin_session):
+        r = admin_session.get(f"{API}/system/info", timeout=15)
+        assert r.status_code == 200
+        body = r.json()
+        for k in ("cpu_logical", "cpu_physical", "ram_total_mb", "platform",
+                  "recommended_max_rps", "recommended_max_vus",
+                  "hard_cap_rps", "hard_cap_duration_sec", "hard_cap_vus"):
+            assert k in body
+        assert body["recommended_max_rps"] > 0
+        assert body["recommended_max_vus"] > 0
+        assert isinstance(body["cpu_logical"], int)
+        assert isinstance(body["ram_total_mb"], int)
+
+    def test_system_live_requires_auth(self):
+        r = requests.get(f"{API}/system/live", timeout=15)
+        assert r.status_code == 401
+
+    def test_system_live_shape(self, admin_session):
+        r = admin_session.get(f"{API}/system/live", timeout=15)
+        assert r.status_code == 200
+        body = r.json()
+        for k in ("cpu_avg", "cpu_per_core", "ram_used_mb", "ram_total_mb",
+                  "ram_pct", "load_1", "load_5", "load_15",
+                  "net_tx_kbps", "net_rx_kbps", "running_tests", "ts"):
+            assert k in body, f"missing live key {k}"
+        assert isinstance(body["cpu_avg"], (int, float))
+        assert isinstance(body["cpu_per_core"], list)
+        assert all(isinstance(x, (int, float)) for x in body["cpu_per_core"])
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5: Multi-method verification
+# ---------------------------------------------------------------------------
+class TestVerifyMethods:
+    @pytest.fixture()
+    def fresh_project(self, new_user_session):
+        domain = f"vm-{uuid.uuid4().hex[:6]}.example.invalid"
+        r = new_user_session.post(f"{API}/projects",
+                                  json={"name": "vm", "domain": domain}, timeout=15)
+        assert r.status_code == 200
+        return r.json()
+
+    def test_verify_dns_unverified_returns_200(self, new_user_session, fresh_project):
+        pid = fresh_project["id"]
+        r = new_user_session.post(f"{API}/projects/{pid}/verify?method=dns", timeout=25)
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+        body = r.json()
+        assert body["verified"] is False
+        assert "expected_token" in body
+        assert "expected_host" in body
+        assert "records_seen" in body
+        assert body["expected_host"].startswith("_resilience.")
+
+    def test_verify_http_file_unverified_returns_200(self, new_user_session, fresh_project):
+        pid = fresh_project["id"]
+        r = new_user_session.post(f"{API}/projects/{pid}/verify?method=http_file", timeout=30)
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+        body = r.json()
+        assert body["verified"] is False
+        assert "expected_token" in body
+        assert "expected_url" in body
+        assert "instructions" in body
+        assert "/.well-known/resilience-challenge.txt" in body["expected_url"]
+
+    def test_verify_html_meta_unverified_returns_200(self, new_user_session, fresh_project):
+        pid = fresh_project["id"]
+        r = new_user_session.post(f"{API}/projects/{pid}/verify?method=html_meta", timeout=30)
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+        body = r.json()
+        assert body["verified"] is False
+        assert "expected_token" in body
+        assert "expected_url" in body
+        assert "instructions" in body
+        assert "resilience-verify" in body["instructions"]
+
+    def test_verify_invalid_method_returns_400(self, new_user_session, fresh_project):
+        pid = fresh_project["id"]
+        r = new_user_session.post(f"{API}/projects/{pid}/verify?method=garbage", timeout=15)
+        assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5: New scenarios (burst, mixed) and hardware caps
+# ---------------------------------------------------------------------------
+def _ensure_verified_example(session, mongo_db):
+    existing = [p for p in session.get(f"{API}/projects").json() if p["domain"] == "example.com"]
+    if existing:
+        pid = existing[0]["id"]
+    else:
+        rp = session.post(f"{API}/projects", json={"name": "ex", "domain": "example.com"}, timeout=15)
+        pid = rp.json()["id"]
+    mongo_db.projects.update_one({"_id": ObjectId(pid)}, {"$set": {"verified": True}})
+    return pid
+
+
+class TestPhase15Scenarios:
+    def test_create_burst_test(self, new_user_session, mongo_db):
+        pid = _ensure_verified_example(new_user_session, mongo_db)
+        rt = new_user_session.post(f"{API}/tests", json={
+            "project_id": pid, "name": "TEST_burst", "test_type": "burst",
+            "target_path": "/", "target_rps": 10, "duration_sec": 8, "vus": 4,
+        }, timeout=20)
+        assert rt.status_code == 200, rt.text
+        assert rt.json()["status"] == "queued"
+
+    def test_create_mixed_test_with_extra_paths(self, new_user_session, mongo_db):
+        pid = _ensure_verified_example(new_user_session, mongo_db)
+        rt = new_user_session.post(f"{API}/tests", json={
+            "project_id": pid, "name": "TEST_mixed", "test_type": "mixed",
+            "target_path": "/", "target_rps": 5, "duration_sec": 8, "vus": 2,
+            "extra_paths": ["/a", "/b"],
+        }, timeout=20)
+        assert rt.status_code == 200, rt.text
+        data = rt.json()
+        assert data["status"] == "queued"
+        # extra_paths should be persisted on the test doc
+        rg = new_user_session.get(f"{API}/tests/{data['id']}", timeout=15)
+        assert rg.status_code == 200
+
+    def test_hardware_cap_rejects_high_rps(self, admin_session, new_user_session, mongo_db):
+        # Read host specs to pick a value above cap
+        info = admin_session.get(f"{API}/system/info", timeout=10).json()
+        over_rps = info["recommended_max_rps"] + 1
+        pid = _ensure_verified_example(new_user_session, mongo_db)
+        r = new_user_session.post(f"{API}/tests", json={
+            "project_id": pid, "name": "capX", "test_type": "smoke",
+            "target_path": "/", "target_rps": over_rps, "duration_sec": 10, "vus": 2,
+        }, timeout=15)
+        assert r.status_code == 400
+        assert "hardware cap" in r.text.lower()
+
+    def test_hardware_cap_rejects_high_vus(self, admin_session, new_user_session, mongo_db):
+        info = admin_session.get(f"{API}/system/info", timeout=10).json()
+        over_vus = info["recommended_max_vus"] + 1
+        pid = _ensure_verified_example(new_user_session, mongo_db)
+        r = new_user_session.post(f"{API}/tests", json={
+            "project_id": pid, "name": "capV", "test_type": "smoke",
+            "target_path": "/", "target_rps": 5, "duration_sec": 10, "vus": over_vus,
+        }, timeout=15)
+        assert r.status_code == 400
+        assert "hardware cap" in r.text.lower()
+
+    def test_smoke_summary_has_split_counts(self, new_user_session, mongo_db):
+        pid = _ensure_verified_example(new_user_session, mongo_db)
+        rt = new_user_session.post(f"{API}/tests", json={
+            "project_id": pid, "name": "TEST_split_counts", "test_type": "smoke",
+            "target_path": "/", "target_rps": 5, "duration_sec": 10, "vus": 2,
+        }, timeout=20)
+        assert rt.status_code == 200, rt.text
+        tid = rt.json()["id"]
+        # poll up to ~40s for completion
+        final = None
+        for _ in range(25):
+            time.sleep(2)
+            d = new_user_session.get(f"{API}/tests/{tid}", timeout=15).json()
+            if d.get("status") in ("completed", "failed", "aborted"):
+                final = d
+                break
+        assert final is not None, "test did not finish within 50s"
+        summary = final.get("summary") or {}
+        for k in ("success_count", "client_error_count", "server_error_count", "network_error_count"):
+            assert k in summary, f"missing {k} in summary"
+            assert isinstance(summary[k], int), f"{k} not int"
+        total = summary.get("total_requests", 0)
+        s = (summary["success_count"] + summary["client_error_count"]
+             + summary["server_error_count"] + summary["network_error_count"])
+        assert s <= total, f"sum of splits {s} > total {total}"
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +388,7 @@ class TestTestRunner:
         assert rt.status_code == 403
         assert "verified" in rt.text.lower()
 
-    def test_safety_caps(self, new_user_session, mongo_db):
+    def test_safety_caps(self, new_user_session, mongo_db, admin_session):
         # Create + force-verify a project against example.com
         domain = "example.com"
         # Cleanup any prior test project for this user with example.com
@@ -217,24 +403,29 @@ class TestTestRunner:
             pid = rp.json()["id"]
         mongo_db.projects.update_one({"_id": ObjectId(pid)}, {"$set": {"verified": True}})
 
+        # Hardware-detected caps now drive rejection (Phase 1.5)
+        info = admin_session.get(f"{API}/system/info", timeout=10).json()
+        over_rps = info["recommended_max_rps"] + 1
+        over_vus = info["recommended_max_vus"] + 1
+
         # target_rps too high
         r = new_user_session.post(f"{API}/tests", json={
             "project_id": pid, "name": "cap1", "test_type": "smoke", "target_path": "/",
-            "target_rps": 6000, "duration_sec": 10, "vus": 2,
+            "target_rps": over_rps, "duration_sec": 10, "vus": 2,
         }, timeout=15)
         assert r.status_code in (400, 422)
 
         # duration too long
         r = new_user_session.post(f"{API}/tests", json={
             "project_id": pid, "name": "cap2", "test_type": "smoke", "target_path": "/",
-            "target_rps": 5, "duration_sec": 700, "vus": 2,
+            "target_rps": 5, "duration_sec": 99999, "vus": 2,
         }, timeout=15)
         assert r.status_code in (400, 422)
 
         # vus too high
         r = new_user_session.post(f"{API}/tests", json={
             "project_id": pid, "name": "cap3", "test_type": "smoke", "target_path": "/",
-            "target_rps": 5, "duration_sec": 10, "vus": 5000,
+            "target_rps": 5, "duration_sec": 10, "vus": over_vus,
         }, timeout=15)
         assert r.status_code in (400, 422)
 

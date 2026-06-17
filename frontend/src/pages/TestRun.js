@@ -188,11 +188,18 @@ export default function TestRun() {
       {/* Summary + Recos */}
       {test.summary && test.status !== "running" && test.status !== "queued" && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" data-testid="test-summary">
-            <MiniStat label="TOTAL_REQ" value={test.summary.total_requests?.toLocaleString()} />
-            <MiniStat label="PEAK_RPS" value={test.summary.peak_rps} accent />
-            <MiniStat label="ERROR_RATE" value={`${test.summary.error_rate}%`} />
-            <MiniStat label="BREAKPOINT" value={test.summary.breakpoint_rps || "—"} />
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6" data-testid="test-summary">
+            <MiniStat label="TOTAL_REQ" value={test.summary.total_requests?.toLocaleString()} testid="summary-total" />
+            <MiniStat label="PEAK_RPS" value={test.summary.peak_rps?.toLocaleString()} accent testid="summary-peak" />
+            <MiniStat label="SUCCESS_2XX" value={test.summary.success_count?.toLocaleString() ?? 0} testid="summary-success" />
+            <MiniStat label="CLIENT_4XX" value={test.summary.client_error_count?.toLocaleString() ?? 0} testid="summary-4xx" />
+            <MiniStat label="SERVER_5XX" value={test.summary.server_error_count?.toLocaleString() ?? 0} testid="summary-5xx" />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+            <MiniStat label="ERROR_RATE" value={`${test.summary.error_rate}%`} testid="summary-error-rate" />
+            <MiniStat label="BREAKPOINT" value={test.summary.breakpoint_rps?.toLocaleString() || "—"} testid="summary-breakpoint" />
+            <MiniStat label="NET_ERRORS" value={test.summary.network_error_count?.toLocaleString() ?? 0} testid="summary-net-errors" />
+            <MiniStat label="DURATION" value={`${test.summary.duration_sec}s`} testid="summary-duration" />
           </div>
 
           {/* Status codes */}

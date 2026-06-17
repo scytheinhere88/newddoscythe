@@ -1,6 +1,7 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Terminal, FolderTree, Activity, History, LogOut, Cpu } from "lucide-react";
+import SystemMonitor from "@/components/SystemMonitor";
 
 const NAV = [
   { to: "/", label: "OVERVIEW", icon: Cpu },
@@ -76,11 +77,9 @@ export default function AppShell({ children }) {
       <main className="flex-1 min-w-0 relative">
         <header className="h-12 border-b border-[#1f2937] flex items-center justify-between px-6 bg-[#050505]">
           <div className="font-mono-display text-[11px] text-gray-500 tracking-widest">
-            <span className="text-[#39ff14]">●</span> SYSTEM ONLINE · K6 ENGINE READY
+            <span className="text-[#39ff14]">●</span> SYSTEM ONLINE
           </div>
-          <div className="font-mono-display text-[11px] text-gray-600 tracking-wider">
-            {new Date().toISOString().replace("T", " ").slice(0, 19)} UTC
-          </div>
+          <SystemMonitor />
         </header>
         <div className="p-8 max-w-[1600px]">{children}</div>
       </main>
