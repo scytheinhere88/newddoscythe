@@ -216,11 +216,21 @@ fi
 # --- 8. Frontend build -------------------------------------------------------
 step "8/9  Frontend build"
 cd "$INSTALL_DIR/frontend"
-PUBLIC_IP="$(curl -s --max-time 4 ifconfig.io || curl -s --max-time 4 api.ipify.org || hostname -I | awk '{print $1}')"
+# Prefer IPv4 for the public URL (more compatible with most browsers).
+# Fallback chain: ipv4 -> ipv6 (wrapped in []) -> first interface IP
+PUBLIC_IP_V4="$(curl -4 -s --max-time 4 ifconfig.io 2>/dev/null || \
+                curl -4 -s --max-time 4 api.ipify.org 2>/dev/null || true)"
+PUBLIC_IP_V6="$(curl -6 -s --max-time 4 ifconfig.io 2>/dev/null || true)"
+LOCAL_IP="$(hostname -I | awk '{print $1}')"
+
 if [ -n "$DOMAIN" ]; then
   PUBLIC_URL="https://$DOMAIN"
+elif [ -n "$PUBLIC_IP_V4" ]; then
+  PUBLIC_URL="http://$PUBLIC_IP_V4"
+elif [ -n "$PUBLIC_IP_V6" ]; then
+  PUBLIC_URL="http://[$PUBLIC_IP_V6]"
 else
-  PUBLIC_URL="http://$PUBLIC_IP"
+  PUBLIC_URL="http://$LOCAL_IP"
 fi
 echo "REACT_APP_BACKEND_URL=$PUBLIC_URL" > .env
 
@@ -235,6 +245,17 @@ log "Frontend built. PUBLIC_URL=$PUBLIC_URL"
 # --- 9. Nginx ---------------------------------------------------------------
 if [ "$SKIP_NGINX" != "1" ]; then
   step "9/9  Nginx reverse proxy"
+
+  # Make build folder readable by www-data even when under /root or /home/<user>
+  # nginx runs as www-data; it needs +x on every parent dir + read on build files
+  PARENT_DIR="$INSTALL_DIR"
+  while [ "$PARENT_DIR" != "/" ] && [ -n "$PARENT_DIR" ]; do
+    chmod o+x "$PARENT_DIR" 2>/dev/null || true
+    PARENT_DIR="$(dirname "$PARENT_DIR")"
+  done
+  chmod -R o+rX "$INSTALL_DIR/frontend/build" 2>/dev/null || true
+  log "Granted www-data traversal access to $INSTALL_DIR"
+
   cat > /etc/nginx/sites-available/resilience <<NGINX_EOF
 server {
     listen 80 default_server;
