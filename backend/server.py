@@ -65,6 +65,9 @@ def detect_host_specs() -> dict:
 
 HOST_SPECS = detect_host_specs()
 LAST_NET = {"bytes_sent": 0, "bytes_recv": 0, "ts": 0}
+_NET_LOCK = asyncio.Lock()
+# Seed psutil cpu_percent so first /api/system/live call doesn't report 0.0
+psutil.cpu_percent(interval=None, percpu=True)
 
 def live_host_stats() -> dict:
     cpu_per_core = psutil.cpu_percent(interval=None, percpu=True)
@@ -956,7 +959,8 @@ async def system_info(_u: dict = Depends(get_current_user)):
 @api.get("/system/live")
 async def system_live(_u: dict = Depends(get_current_user)):
     """Live CPU/RAM/network/load stats — poll every 1-2s from frontend."""
-    return live_host_stats()
+    async with _NET_LOCK:
+        return live_host_stats()
 
 @api.get("/")
 async def root():
