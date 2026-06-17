@@ -1,56 +1,61 @@
-import { useEffect } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
+import Login from "@/pages/Login";
+import Register from "@/pages/Register";
+import Overview from "@/pages/Overview";
+import Projects from "@/pages/Projects";
+import NewTest from "@/pages/NewTest";
+import TestRun from "@/pages/TestRun";
+import History from "@/pages/History";
+import AppShell from "@/components/AppShell";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+function Protected({ children }) {
+  const { user } = useAuth();
+  const location = useLocation();
+  if (user === null) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center font-mono-display text-gray-500" data-testid="auth-loading">
+        $ verifying_session<span className="cursor-blink" />
+      </div>
+    );
+  }
+  if (user === false) {
+    return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+  }
+  return <AppShell>{children}</AppShell>;
+}
 
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
+function GuestOnly({ children }) {
+  const { user } = useAuth();
+  if (user === null) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center font-mono-display text-gray-500">
+        $ checking...
+      </div>
+    );
+  }
+  if (user) return <Navigate to="/" replace />;
+  return children;
+}
 
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
+export default function App() {
   return (
     <div className="App">
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<GuestOnly><Login /></GuestOnly>} />
+            <Route path="/register" element={<GuestOnly><Register /></GuestOnly>} />
+            <Route path="/" element={<Protected><Overview /></Protected>} />
+            <Route path="/projects" element={<Protected><Projects /></Protected>} />
+            <Route path="/tests/new" element={<Protected><NewTest /></Protected>} />
+            <Route path="/tests/:id" element={<Protected><TestRun /></Protected>} />
+            <Route path="/history" element={<Protected><History /></Protected>} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </AuthProvider>
       </BrowserRouter>
     </div>
   );
 }
-
-export default App;

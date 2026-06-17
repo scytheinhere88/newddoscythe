@@ -1,115 +1,318 @@
+@import url('https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@400;700;900&family=IBM+Plex+Mono:wght@400;500;600;700&family=Geist:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+:root {
+    --bg-base: #000000;
+    --bg-surface: #0a0a0a;
+    --bg-surface-hover: #111111;
+    --bg-panel: #050505;
+    --neon: #39ff14;
+    --neon-soft: #00ff88;
+    --neon-glow: rgba(57, 255, 20, 0.45);
+    --neon-muted: rgba(57, 255, 20, 0.08);
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --text-muted: #4b5563;
+    --border-default: #1f2937;
+    --border-subtle: #111827;
+    --border-accent: rgba(57, 255, 20, 0.3);
+    --status-warn: #fbbf24;
+    --status-error: #ef4444;
+}
+
+html {
+    background: var(--bg-base);
+}
+
 body {
     margin: 0;
-    font-family:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-        sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-family: 'Geist', system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+    min-height: 100vh;
 }
 
-code {
-    font-family:
-        source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+::selection {
+    background: var(--neon);
+    color: #000;
 }
 
-@layer base {
-    :root {
-        --background: 0 0% 100%;
-        --foreground: 0 0% 3.9%;
-        --card: 0 0% 100%;
-        --card-foreground: 0 0% 3.9%;
-        --popover: 0 0% 100%;
-        --popover-foreground: 0 0% 3.9%;
-        --primary: 0 0% 9%;
-        --primary-foreground: 0 0% 98%;
-        --secondary: 0 0% 96.1%;
-        --secondary-foreground: 0 0% 9%;
-        --muted: 0 0% 96.1%;
-        --muted-foreground: 0 0% 45.1%;
-        --accent: 0 0% 96.1%;
-        --accent-foreground: 0 0% 9%;
-        --destructive: 0 84.2% 60.2%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 89.8%;
-        --input: 0 0% 89.8%;
-        --ring: 0 0% 3.9%;
-        --chart-1: 12 76% 61%;
-        --chart-2: 173 58% 39%;
-        --chart-3: 197 37% 24%;
-        --chart-4: 43 74% 66%;
-        --chart-5: 27 87% 67%;
-        --radius: 0.5rem;
-    }
-    .dark {
-        --background: 0 0% 3.9%;
-        --foreground: 0 0% 98%;
-        --card: 0 0% 3.9%;
-        --card-foreground: 0 0% 98%;
-        --popover: 0 0% 3.9%;
-        --popover-foreground: 0 0% 98%;
-        --primary: 0 0% 98%;
-        --primary-foreground: 0 0% 9%;
-        --secondary: 0 0% 14.9%;
-        --secondary-foreground: 0 0% 98%;
-        --muted: 0 0% 14.9%;
-        --muted-foreground: 0 0% 63.9%;
-        --accent: 0 0% 14.9%;
-        --accent-foreground: 0 0% 98%;
-        --destructive: 0 62.8% 30.6%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 14.9%;
-        --input: 0 0% 14.9%;
-        --ring: 0 0% 83.1%;
-        --chart-1: 220 70% 50%;
-        --chart-2: 160 60% 45%;
-        --chart-3: 30 80% 55%;
-        --chart-4: 280 65% 60%;
-        --chart-5: 340 75% 55%;
-    }
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: var(--bg-surface);
+}
+::-webkit-scrollbar-thumb {
+    background: var(--border-default);
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--neon);
 }
 
-@layer base {
-    * {
-        @apply border-border;
-    }
-    body {
-        @apply bg-background text-foreground;
-    }
+/* Mono utility */
+.font-mono-display {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-feature-settings: "tnum" 1, "zero" 1;
+}
+.font-heading {
+    font-family: 'Azeret Mono', 'IBM Plex Mono', monospace;
+    letter-spacing: -0.02em;
+}
+.font-body {
+    font-family: 'Geist', system-ui, sans-serif;
 }
 
-@layer base {
-    [data-debug-wrapper="true"] {
-        display: contents !important;
-    }
+/* Scanlines overlay */
+.scanlines::before {
+    content: '';
+    position: fixed;
+    pointer-events: none;
+    inset: 0;
+    z-index: 9999;
+    background: repeating-linear-gradient(
+        to bottom,
+        transparent 0,
+        transparent 2px,
+        rgba(0, 0, 0, 0.15) 2px,
+        rgba(0, 0, 0, 0.15) 3px
+    );
+    mix-blend-mode: multiply;
+    opacity: 0.7;
+}
 
-    [data-debug-wrapper="true"] > * {
-        margin-left: inherit;
-        margin-right: inherit;
-        margin-top: inherit;
-        margin-bottom: inherit;
-        padding-left: inherit;
-        padding-right: inherit;
-        padding-top: inherit;
-        padding-bottom: inherit;
-        column-gap: inherit;
-        row-gap: inherit;
-        gap: inherit;
-        border-left-width: inherit;
-        border-right-width: inherit;
-        border-top-width: inherit;
-        border-bottom-width: inherit;
-        border-left-style: inherit;
-        border-right-style: inherit;
-        border-top-style: inherit;
-        border-bottom-style: inherit;
-        border-left-color: inherit;
-        border-right-color: inherit;
-        border-top-color: inherit;
-        border-bottom-color: inherit;
-    }
+/* Grain overlay */
+.grain::after {
+    content: '';
+    position: fixed;
+    pointer-events: none;
+    inset: 0;
+    z-index: 9998;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.35;
+    mix-blend-mode: overlay;
+}
+
+/* Neon glow text */
+.neon-text {
+    color: var(--neon);
+    text-shadow: 0 0 8px var(--neon-glow);
+}
+
+/* Cursor blink */
+.cursor-blink::after {
+    content: '\2588';
+    color: var(--neon);
+    margin-left: 0.3rem;
+    animation: blink 1s step-end infinite;
+}
+@keyframes blink {
+    50% { opacity: 0; }
+}
+
+/* Button neon hover */
+.btn-neon {
+    background: transparent;
+    border: 1px solid var(--neon);
+    color: var(--neon);
+    padding: 0.65rem 1.5rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-weight: 600;
+    transition: all 0.25s ease;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    white-space: nowrap;
+}
+.btn-neon:hover:not(:disabled) {
+    background: var(--neon);
+    color: #000;
+    box-shadow: 0 0 18px var(--neon-glow), inset 0 0 8px rgba(0, 0, 0, 0.3);
+}
+.btn-neon:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.btn-ghost {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    padding: 0.6rem 1.1rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+.btn-ghost:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+.btn-danger {
+    background: transparent;
+    border: 1px solid var(--status-error);
+    color: var(--status-error);
+    padding: 0.55rem 1rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.btn-danger:hover {
+    background: var(--status-error);
+    color: #000;
+}
+
+/* Input */
+.input-neon {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    color: var(--text-primary);
+    padding: 0.75rem 0.9rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.9rem;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.input-neon:focus {
+    border-color: var(--neon);
+    box-shadow: 0 0 0 1px var(--neon-glow), inset 0 0 12px rgba(57, 255, 20, 0.04);
+}
+.input-neon::placeholder {
+    color: var(--text-muted);
+}
+
+/* Panel/Card */
+.panel {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    position: relative;
+}
+.panel-active {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-top: 1px solid var(--neon);
+    box-shadow: 0 0 24px rgba(57, 255, 20, 0.07);
+}
+
+/* Badge */
+.badge-neon {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: var(--neon-muted);
+    border: 1px solid var(--neon);
+    color: var(--neon);
+    padding: 0.15rem 0.55rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+.badge-warn {
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid var(--status-warn);
+    color: var(--status-warn);
+}
+.badge-error {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid var(--status-error);
+    color: var(--status-error);
+}
+.badge-muted {
+    background: rgba(156, 163, 175, 0.1);
+    border: 1px solid var(--text-muted);
+    color: var(--text-secondary);
+}
+
+/* Terminal block */
+.terminal {
+    background: #000;
+    border: 1px solid var(--border-default);
+    padding: 1.25rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--neon);
+    line-height: 1.6;
+    overflow-x: auto;
+}
+.terminal-prompt::before {
+    content: 'root@resilience:~$ ';
+    color: var(--text-muted);
+    margin-right: 0.35rem;
+}
+
+/* Pulse dot */
+.pulse-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background: var(--neon);
+    border-radius: 50%;
+    box-shadow: 0 0 8px var(--neon);
+    animation: pulseDot 1.4s ease-in-out infinite;
+}
+@keyframes pulseDot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.75); }
+}
+
+/* ASCII divider */
+.ascii-div {
+    color: var(--border-default);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    user-select: none;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+/* Stat number */
+.stat-num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 700;
+    font-feature-settings: "tnum" 1, "zero" 1;
+    color: var(--text-primary);
+    line-height: 1;
+}
+.stat-num-neon {
+    color: var(--neon);
+    text-shadow: 0 0 12px rgba(57, 255, 20, 0.4);
+}
+
+/* Animation: fade up */
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.fade-up {
+    animation: fadeUp 0.4s ease-out both;
+}
+
+/* Hover: panel border glow */
+.panel-hover:hover {
+    border-color: rgba(57, 255, 20, 0.5);
+    transition: border-color 0.3s ease;
+}
+
+/* Disable rounded corners across UI */
+* {
+    border-radius: 0 !important;
 }
