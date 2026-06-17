@@ -25,6 +25,13 @@ from pydantic import BaseModel, Field, EmailStr, field_validator
 from motor.motor_asyncio import AsyncIOMotorClient
 from starlette.middleware.cors import CORSMiddleware
 
+from ipv6_rotator import (
+    detect_ipv6_capability,
+    generate_address_pool,
+    add_addresses,
+    remove_addresses,
+)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -66,6 +73,10 @@ def detect_host_specs() -> dict:
 HOST_SPECS = detect_host_specs()
 LAST_NET = {"bytes_sent": 0, "bytes_recv": 0, "ts": 0}
 _NET_LOCK = asyncio.Lock()
+IPV6_CAPABILITY: dict = {"available": False, "mode": "unavailable", "subnet": None,
+                        "interface": None, "primary_addr": None,
+                        "can_rotate": False, "max_concurrent_addrs": 0,
+                        "reason": "not yet probed"}
 # Seed psutil cpu_percent so first /api/system/live call doesn't report 0.0
 psutil.cpu_percent(interval=None, percpu=True)
 
@@ -203,6 +214,8 @@ class ScenarioIn(BaseModel):
     headers: Optional[dict] = None
     body: Optional[str] = None
     extra_paths: Optional[List[str]] = None  # for "mixed" scenario
+    ipv6_rotation: bool = False
+    ipv6_count: int = Field(default=0, ge=0, le=2000)
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -232,6 +245,14 @@ async def _startup():
             {"email": admin_email},
             {"$set": {"password_hash": hash_password(admin_password)}},
         )
+
+    # Probe IPv6 capability — non-fatal if it fails
+    global IPV6_CAPABILITY
+    try:
+        IPV6_CAPABILITY = await detect_ipv6_capability()
+        logger.info(f"IPv6 capability: {IPV6_CAPABILITY['mode']} ({IPV6_CAPABILITY['reason']})")
+    except Exception as e:
+        logger.warning(f"IPv6 probe failed: {e}")
 
 # ---------------------------------------------------------------------------
 # Auth routes
@@ -636,15 +657,24 @@ async def stream_k6_output(test_id: str, proc: asyncio.subprocess.Process):
     if cur_bucket is not None:
         await flush(cur_bucket)
 
-async def run_k6_subprocess(test_id: str, script: str):
+async def run_k6_subprocess(test_id: str, script: str, ipv6_pool: Optional[list] = None,
+                            ipv6_iface: Optional[str] = None):
     tmpdir = tempfile.mkdtemp(prefix="k6_")
     script_path = os.path.join(tmpdir, "script.js")
     with open(script_path, "w") as f:
         f.write(script)
-    cmd = ["k6", "run", "--out", "json=-", "--quiet", "--no-summary", "--no-color", script_path]
-    logger.info(f"Starting k6 for {test_id}")
+
+    env = os.environ.copy()
+    cmd = ["k6", "run", "--out", "json=-", "--quiet", "--no-summary", "--no-color"]
+    if ipv6_pool:
+        # k6 v0.51+ supports K6_LOCAL_IPS env var or --local-ips
+        env["K6_LOCAL_IPS"] = ",".join(ipv6_pool)
+        cmd.extend(["--local-ips", ",".join(ipv6_pool[:200])])  # cli limited; env carries full list
+    cmd.append(script_path)
+
+    logger.info(f"Starting k6 for {test_id} (ipv6 pool size={len(ipv6_pool) if ipv6_pool else 0})")
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
     )
     RUNNING_TESTS[test_id] = {"proc": proc, "started_at": datetime.now(timezone.utc).isoformat()}
     await db.tests.update_one({"_id": ObjectId(test_id)},
@@ -662,6 +692,13 @@ async def run_k6_subprocess(test_id: str, script: str):
         await finalize_test(test_id, "failed", str(e))
     finally:
         RUNNING_TESTS.pop(test_id, None)
+        # Cleanup ipv6 addresses if we added them
+        if ipv6_pool and ipv6_iface:
+            try:
+                removed = await remove_addresses(ipv6_iface, ipv6_pool)
+                logger.info(f"Cleaned up {removed}/{len(ipv6_pool)} IPv6 addresses")
+            except Exception as e:
+                logger.warning(f"IPv6 cleanup error: {e}")
         try:
             os.remove(script_path)
             os.rmdir(tmpdir)
@@ -814,6 +851,8 @@ async def create_test(scenario: ScenarioIn, user: dict = Depends(get_current_use
         "created_at": datetime.now(timezone.utc).isoformat(),
         "summary": None,
         "recommendations": [],
+        "ipv6_pool_size": 0,
+        "ipv6_mode": "off",
     }
     res = await db.tests.insert_one(doc)
     test_id = str(res.inserted_id)
@@ -821,9 +860,33 @@ async def create_test(scenario: ScenarioIn, user: dict = Depends(get_current_use
         {"_id": proj["_id"]},
         {"$set": {"last_test_at": doc["created_at"]}, "$inc": {"test_count": 1}},
     )
+
+    # IPv6 rotation prep
+    ipv6_pool: list[str] = []
+    ipv6_iface: Optional[str] = None
+    ipv6_mode = "off"
+    if scenario.ipv6_rotation and scenario.ipv6_count > 0:
+        if IPV6_CAPABILITY.get("can_rotate") and IPV6_CAPABILITY.get("subnet"):
+            count = min(scenario.ipv6_count, IPV6_CAPABILITY.get("max_concurrent_addrs", 2000))
+            pool = generate_address_pool(IPV6_CAPABILITY["subnet"], count)
+            ipv6_iface = IPV6_CAPABILITY["interface"]
+            ok, errors = await add_addresses(ipv6_iface, pool)
+            ipv6_pool = pool[:ok]
+            ipv6_mode = "live" if ok > 0 else "failed"
+            logger.info(f"IPv6 rotation: added {ok}/{count} addresses on {ipv6_iface}")
+        else:
+            ipv6_mode = "simulation"
+            logger.info(f"IPv6 rotation requested but unavailable: {IPV6_CAPABILITY.get('reason')}")
+
+    await db.tests.update_one(
+        {"_id": ObjectId(test_id)},
+        {"$set": {"ipv6_pool_size": len(ipv6_pool), "ipv6_mode": ipv6_mode}},
+    )
+
     script = render_k6_script(scenario, full_url)
-    asyncio.create_task(run_k6_subprocess(test_id, script))
-    return {"id": test_id, "status": "queued", "target_url": full_url}
+    asyncio.create_task(run_k6_subprocess(test_id, script, ipv6_pool or None, ipv6_iface))
+    return {"id": test_id, "status": "queued", "target_url": full_url,
+            "ipv6_pool_size": len(ipv6_pool), "ipv6_mode": ipv6_mode}
 
 @api.get("/tests")
 async def list_tests(project_id: Optional[str] = None, user: dict = Depends(get_current_user)):
@@ -843,6 +906,8 @@ async def list_tests(project_id: Optional[str] = None, user: dict = Depends(get_
         "started_at": r.get("started_at"),
         "ended_at": r.get("ended_at"),
         "summary": r.get("summary"),
+        "ipv6_pool_size": r.get("ipv6_pool_size", 0),
+        "ipv6_mode": r.get("ipv6_mode", "off"),
     } for r in rows]
 
 @api.get("/tests/{test_id}")
@@ -865,6 +930,8 @@ async def get_test(test_id: str, user: dict = Depends(get_current_user)):
         "summary": r.get("summary"),
         "recommendations": r.get("recommendations") or [],
         "log_tail": r.get("log_tail", ""),
+        "ipv6_pool_size": r.get("ipv6_pool_size", 0),
+        "ipv6_mode": r.get("ipv6_mode", "off"),
     }
 
 @api.get("/tests/{test_id}/metrics")
@@ -961,6 +1028,18 @@ async def system_live(_u: dict = Depends(get_current_user)):
     """Live CPU/RAM/network/load stats — poll every 1-2s from frontend."""
     async with _NET_LOCK:
         return live_host_stats()
+
+@api.get("/system/ipv6")
+async def system_ipv6(_u: dict = Depends(get_current_user)):
+    """Return cached IPv6 rotation capability for this host."""
+    return IPV6_CAPABILITY
+
+@api.post("/system/ipv6/reprobe")
+async def system_ipv6_reprobe(_u: dict = Depends(get_current_user)):
+    """Re-run IPv6 capability detection (e.g. after deployment to a real VPS)."""
+    global IPV6_CAPABILITY
+    IPV6_CAPABILITY = await detect_ipv6_capability()
+    return IPV6_CAPABILITY
 
 @api.get("/")
 async def root():

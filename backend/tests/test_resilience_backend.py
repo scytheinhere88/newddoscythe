@@ -374,6 +374,108 @@ class TestPhase15Scenarios:
 
 
 # ---------------------------------------------------------------------------
+# Phase 2: IPv6 source rotation
+# ---------------------------------------------------------------------------
+class TestIPv6:
+    def test_system_ipv6_requires_auth(self):
+        r = requests.get(f"{API}/system/ipv6", timeout=15)
+        assert r.status_code == 401
+
+    def test_system_ipv6_shape_unavailable_in_preview(self, admin_session):
+        r = admin_session.get(f"{API}/system/ipv6", timeout=15)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        for k in ("available", "mode", "subnet", "interface", "primary_addr",
+                  "can_rotate", "max_concurrent_addrs", "reason"):
+            assert k in body, f"missing key {k}"
+        # In preview env, no IPv6 + no CAP_NET_ADMIN
+        assert body["available"] is False
+        assert body["mode"] == "unavailable"
+        assert body["can_rotate"] is False
+        assert isinstance(body["reason"], str) and len(body["reason"]) > 0
+
+    def test_system_ipv6_reprobe_requires_auth(self):
+        r = requests.post(f"{API}/system/ipv6/reprobe", timeout=15)
+        assert r.status_code == 401
+
+    def test_system_ipv6_reprobe_returns_capability(self, admin_session):
+        r = admin_session.post(f"{API}/system/ipv6/reprobe", timeout=20)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        for k in ("available", "mode", "subnet", "interface", "primary_addr",
+                  "can_rotate", "max_concurrent_addrs", "reason"):
+            assert k in body
+        assert body["mode"] in ("unavailable", "simulation", "live")
+        # Preview env: still unavailable
+        assert body["mode"] == "unavailable"
+
+    def test_create_test_ipv6_rotation_simulation(self, new_user_session, mongo_db):
+        pid = _ensure_verified_example(new_user_session, mongo_db)
+        rt = new_user_session.post(f"{API}/tests", json={
+            "project_id": pid, "name": "TEST_ipv6_sim", "test_type": "smoke",
+            "target_path": "/", "target_rps": 5, "duration_sec": 8, "vus": 2,
+            "ipv6_rotation": True, "ipv6_count": 500,
+        }, timeout=20)
+        assert rt.status_code == 200, rt.text
+        data = rt.json()
+        # Preview env: unavailable -> simulation, pool_size 0
+        assert data.get("ipv6_mode") == "simulation"
+        assert data.get("ipv6_pool_size") == 0
+        assert data["status"] == "queued"
+        # GET /api/tests/{id} should include the fields
+        rg = new_user_session.get(f"{API}/tests/{data['id']}", timeout=15)
+        assert rg.status_code == 200
+        gd = rg.json()
+        assert gd.get("ipv6_mode") == "simulation"
+        assert gd.get("ipv6_pool_size") == 0
+
+    def test_create_test_default_ipv6_off(self, new_user_session, mongo_db):
+        pid = _ensure_verified_example(new_user_session, mongo_db)
+        rt = new_user_session.post(f"{API}/tests", json={
+            "project_id": pid, "name": "TEST_ipv6_off", "test_type": "smoke",
+            "target_path": "/", "target_rps": 5, "duration_sec": 8, "vus": 2,
+        }, timeout=20)
+        assert rt.status_code == 200, rt.text
+        data = rt.json()
+        assert data.get("ipv6_mode") == "off"
+        assert data.get("ipv6_pool_size") == 0
+
+    def test_create_test_ipv6_rotation_with_zero_count_stays_off(self, new_user_session, mongo_db):
+        pid = _ensure_verified_example(new_user_session, mongo_db)
+        rt = new_user_session.post(f"{API}/tests", json={
+            "project_id": pid, "name": "TEST_ipv6_zero", "test_type": "smoke",
+            "target_path": "/", "target_rps": 5, "duration_sec": 8, "vus": 2,
+            "ipv6_rotation": True, "ipv6_count": 0,
+        }, timeout=20)
+        assert rt.status_code == 200, rt.text
+        data = rt.json()
+        # rotation requested but count=0 -> doesn't trigger rotation, mode stays 'off'
+        assert data.get("ipv6_mode") == "off"
+        assert data.get("ipv6_pool_size") == 0
+
+    def test_create_test_ipv6_count_over_2000_rejected(self, new_user_session, mongo_db):
+        pid = _ensure_verified_example(new_user_session, mongo_db)
+        r = new_user_session.post(f"{API}/tests", json={
+            "project_id": pid, "name": "TEST_ipv6_over", "test_type": "smoke",
+            "target_path": "/", "target_rps": 5, "duration_sec": 8, "vus": 2,
+            "ipv6_rotation": True, "ipv6_count": 2001,
+        }, timeout=15)
+        assert r.status_code == 422
+
+    def test_list_tests_includes_ipv6_fields(self, new_user_session, mongo_db):
+        _ensure_verified_example(new_user_session, mongo_db)
+        r = new_user_session.get(f"{API}/tests", timeout=15)
+        assert r.status_code == 200
+        tests = r.json()
+        assert isinstance(tests, list)
+        # find at least one test (we created several above)
+        if tests:
+            t = tests[0]
+            assert "ipv6_pool_size" in t, f"missing ipv6_pool_size in test list item: {t.keys()}"
+            assert "ipv6_mode" in t, f"missing ipv6_mode in test list item: {t.keys()}"
+
+
+# ---------------------------------------------------------------------------
 # Tests (k6 runner)
 # ---------------------------------------------------------------------------
 class TestTestRunner:

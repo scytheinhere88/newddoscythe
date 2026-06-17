@@ -30,13 +30,20 @@ export default function NewTest() {
     duration_sec: 60,
     vus: 50,
     extra_paths: "",
+    ipv6_rotation: false,
+    ipv6_count: 500,
   });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ipv6Cap, setIpv6Cap] = useState(null);
 
   useEffect(() => {
     (async () => {
-      const [p, s] = await Promise.all([api.get("/projects"), api.get("/stats/overview")]);
+      const [p, s, v6] = await Promise.all([
+        api.get("/projects"),
+        api.get("/stats/overview"),
+        api.get("/system/ipv6"),
+      ]);
       const verified = p.data.filter((x) => x.verified);
       setProjects(verified);
       if (!form.project_id && verified.length) {
@@ -44,6 +51,7 @@ export default function NewTest() {
       }
       setLimits(s.data.limits);
       setHost(s.data.host);
+      setIpv6Cap(v6.data);
     })();
     // eslint-disable-next-line
   }, []);
@@ -250,6 +258,68 @@ export default function NewTest() {
               </div>
             </div>
 
+            {/* IPv6 rotation panel */}
+            <div className="panel p-5" data-testid="ipv6-panel">
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-mono-display text-[10px] tracking-widest text-gray-500 uppercase">
+                  // [04] IPV6_SOURCE_ROTATION
+                </div>
+                {ipv6Cap && (
+                  <span className={`badge-neon ${
+                    ipv6Cap.mode === "live" ? "" :
+                    ipv6Cap.mode === "simulation" ? "badge-warn" : "badge-muted"
+                  }`} data-testid="ipv6-status-badge">
+                    {ipv6Cap.mode === "live" ? "● LIVE" :
+                     ipv6Cap.mode === "simulation" ? "◌ SIMULATION" : "○ UNAVAILABLE"}
+                  </span>
+                )}
+              </div>
+              {ipv6Cap && ipv6Cap.mode === "live" && (
+                <div className="font-mono-display text-[11px] text-gray-400 mb-3 leading-relaxed">
+                  <span className="text-gray-500">SUBNET:</span> <span className="text-[#39ff14]">{ipv6Cap.subnet}</span><br />
+                  <span className="text-gray-500">IFACE:</span> <span className="text-gray-300">{ipv6Cap.interface}</span> ·
+                  <span className="text-gray-500 ml-1">MAX_POOL:</span> <span className="text-gray-300">{ipv6Cap.max_concurrent_addrs.toLocaleString()}</span>
+                </div>
+              )}
+              {ipv6Cap && ipv6Cap.mode !== "live" && (
+                <div className="border border-[#1f2937] bg-[#0a0a0a] p-3 mb-3" data-testid="ipv6-warning">
+                  <div className="font-mono-display text-[11px] text-[#fbbf24] mb-1">
+                    {ipv6Cap.mode === "simulation" ? "⚠ SIMULATION MODE" : "⊘ IPV6 NOT DETECTED"}
+                  </div>
+                  <div className="text-gray-400 text-xs leading-relaxed">
+                    {ipv6Cap.reason}.
+                    <br />→ Deploy this dashboard to your own Ubuntu 22.04 VPS (root + IPv6 /64) to enable live rotation. See <span className="text-[#39ff14]">DEPLOYMENT.md</span> in the repo.
+                  </div>
+                </div>
+              )}
+              <label className="flex items-center gap-3 cursor-pointer mb-3">
+                <input
+                  type="checkbox"
+                  checked={form.ipv6_rotation}
+                  onChange={(e) => setForm({ ...form, ipv6_rotation: e.target.checked })}
+                  className="accent-[#39ff14] w-4 h-4"
+                  data-testid="ipv6-toggle"
+                />
+                <span className="font-mono-display text-xs text-gray-300 tracking-wider">
+                  ENABLE_IPV6_SOURCE_ROTATION
+                </span>
+                <span className="text-[10px] text-gray-500 font-mono-display">
+                  // {form.ipv6_rotation ? `${form.ipv6_count} unique source IPs` : "single source IP (default)"}
+                </span>
+              </label>
+              {form.ipv6_rotation && (
+                <SliderRow
+                  label="IPV6_POOL_SIZE"
+                  testid="form-ipv6-count"
+                  value={form.ipv6_count}
+                  min={2}
+                  max={Math.min(2000, ipv6Cap?.max_concurrent_addrs || 2000)}
+                  onChange={(v) => setForm({ ...form, ipv6_count: v })}
+                  hint="Each VU rotates through this pool; target server sees N distinct source IPs."
+                />
+              )}
+            </div>
+
             {err && (
               <div className="badge-error block px-4 py-3 font-mono-display text-xs" data-testid="new-test-error">
                 ! {err}
@@ -269,6 +339,7 @@ export default function NewTest() {
                 <SumRow k="VUS" v={form.vus} />
                 <SumRow k="DURATION" v={`${form.duration_sec}s`} />
                 {form.test_type === "breakpoint" && <SumRow k="TARGET_RPS" v={form.target_rps} />}
+                {form.ipv6_rotation && <SumRow k="IPV6_POOL" v={`${form.ipv6_count} addrs`} />}
               </dl>
               <div className="ascii-div my-4">━━━━━━━━━━━━━━━━━━━━━</div>
               <div className="text-[11px] text-gray-500 font-mono-display leading-relaxed mb-4">

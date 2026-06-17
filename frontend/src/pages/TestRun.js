@@ -100,6 +100,19 @@ export default function TestRun() {
             <span className="text-gray-300">{test.target_url}</span>
             <span className="ml-3 text-gray-600">·</span>
             <span className="ml-3 uppercase text-[#39ff14]">{test.test_type}</span>
+            {test.ipv6_mode && test.ipv6_mode !== "off" && (
+              <>
+                <span className="ml-3 text-gray-600">·</span>
+                <span className="ml-3 font-mono-display text-[10px]" data-testid="test-ipv6-info">
+                  IPV6:{" "}
+                  <span className={test.ipv6_mode === "live" ? "text-[#39ff14]" : "text-[#fbbf24]"}>
+                    {test.ipv6_mode === "live"
+                      ? `${test.ipv6_pool_size} unique sources`
+                      : `${test.ipv6_mode}`}
+                  </span>
+                </span>
+              </>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-3">
