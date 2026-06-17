@@ -1,0 +1,118 @@
+{
+  "theme": "dark",
+  "archetype": "7 (Electric & Neon)",
+  "global_rules": {
+    "background_color": "#000000",
+    "text_color": "#E5E7EB",
+    "accent_color": "#39FF14",
+    "border_radius": "0px",
+    "spacing": "Dense, Control Room Grid (gap-4, gap-6)",
+    "border_style": "1px solid, sharp edges"
+  },
+  "typography": {
+    "headings": {
+      "font_family": "Azeret Mono",
+      "weights": ["400", "700", "900"],
+      "tracking": "tracking-tighter",
+      "usage": "Massive stats, hero text, section headers"
+    },
+    "body": {
+      "font_family": "Geist",
+      "weights": ["400", "500"],
+      "usage": "Paragraphs, labels, reading content"
+    },
+    "monospace": {
+      "font_family": "IBM Plex Mono",
+      "weights": ["400", "600"],
+      "usage": "Metrics, codes, terminal outputs, tables, logs"
+    }
+  },
+  "colors": {
+    "background": {
+      "base": "#000000",
+      "surface": "#0A0A0A",
+      "surface_hover": "#111111",
+      "panel": "#050505"
+    },
+    "primary": {
+      "neon_green": "#39FF14",
+      "neon_glow": "rgba(57, 255, 20, 0.4)",
+      "emerald": "#00FF88",
+      "muted_green": "rgba(57, 255, 20, 0.1)"
+    },
+    "text": {
+      "primary": "#F3F4F6",
+      "secondary": "#9CA3AF",
+      "muted": "#4B5563",
+      "accent": "#39FF14"
+    },
+    "border": {
+      "default": "#1F2937",
+      "focus": "#39FF14",
+      "subtle": "#111827",
+      "accent": "rgba(57, 255, 20, 0.3)"
+    },
+    "status": {
+      "success": "#39FF14",
+      "warning": "#FBBF24",
+      "error": "#EF4444",
+      "info": "#3B82F6"
+    }
+  },
+  "visual_enhancers": {
+    "texture": "Grain/noise overlay via CSS (opacity 0.03)",
+    "scanlines": "Repeating linear gradient CSS overlay (1px height, transparent to rgba(0,0,0,0.15))",
+    "glow": "Neon drop-shadow for primary CTAs (drop-shadow-[0_0_8px_rgba(57,255,20,0.6)])",
+    "terminal_elements": "Blinking cursor (animate-pulse) next to active states, ASCII borders or subtle 1px green borders on active modules."
+  },
+  "layouts": {
+    "grid_system": "Mode B: Control Room Grid. 12-column subgrid logic. Strict alignment, no floating objects. Every pixel accounted for.",
+    "cards": "Flat background (bg-[#0A0A0A]), 1px solid border (#1F2937), rounded-none. Hover: border transitions to #39FF14/50."
+  },
+  "animations": {
+    "hover": "Instant background color shift, slow border glow transition (transition-all duration-300 ease-out).",
+    "terminal": "Cursor blink (1s step-end infinite), number counter animations for large stats."
+  },
+  "components": {
+    "button": {
+      "primary": "bg-transparent border border-[#39FF14] text-[#39FF14] hover:bg-[#39FF14] hover:text-black hover:shadow-[0_0_15px_rgba(57,255,20,0.6)] font-mono rounded-none uppercase text-sm tracking-widest transition-all",
+      "secondary": "bg-[#0A0A0A] border border-[#1F2937] text-gray-300 hover:text-white hover:border-gray-500 font-mono rounded-none text-sm transition-all"
+    },
+    "input": "bg-[#0A0A0A] border border-[#1F2937] text-[#F3F4F6] focus:border-[#39FF14] focus:ring-1 focus:ring-[#39FF14] font-mono rounded-none placeholder:text-gray-600 transition-colors",
+    "card": "bg-[#0A0A0A] border border-[#1F2937] rounded-none overflow-hidden relative. Include an optional 1px green top border for 'active' or 'running' states.",
+    "table": "Dense padding (py-2 px-3). Header uses uppercase monospace (text-xs tracking-wider text-gray-400). Rows have hover state bg-[#111111].",
+    "chart": "Recharts with neon green lines (#39FF14), black background, minimal axes (gray-800). Gradient fill under line (green to transparent). Disable cartesian grid or make it opacity 0.05.",
+    "badge": "bg-[rgba(57,255,20,0.1)] border border-[#39FF14] text-[#39FF14] rounded-none px-2 py-0.5 text-xs font-mono uppercase"
+  },
+  "pages": {
+    "Auth": "Split screen layout. Left side: Terminal login form with 'root@resilience:~$' prompt aesthetic. Right side: Abstract green matrix background image with CSS scanlines overlay.",
+    "Dashboard_Home": "Bento grid of metrics. Massive IBM Plex Mono numbers for 'Total Tests Run' and 'Avg RPS'. Use Azeret Mono for the H1 page title.",
+    "Project_Manager": "CRUD list displaying user domains. Focus on monospace alignment for IPs, domains, and last test dates.",
+    "Domain_Verification": "Stepped flow. Copy-paste DNS TXT record component with a prominent 'click to copy' interaction. Terminal block design for the token.",
+    "Test_Scenario_Builder": "Multi-step or segmented control (Shadcn Tabs). Sliders for Target RPS. Monospace input for Endpoint Paths. High-tension 'DEPLOY TEST' primary CTA.",
+    "Live_Test_Run_View": "High-density control room. Real-time Recharts line chart spanning full width. Latency percentiles (p50/p95/p99) in tight 1-col widgets on the side.",
+    "Test_History": "Data table showing past runs. Status column uses Badges (Success=Green, Failed=Red, Stress=Amber).",
+    "Test_Report": "Detailed terminal-like log output. Hardening recommendations presented as 'System Diagnostics' in a preformatted `<pre>` style container."
+  },
+  "media": {
+    "images": [
+      {
+        "url": "https://images.unsplash.com/photo-1581193633211-42cf83aaa734?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2Mzl8MHwxfHNlYXJjaHwzfHxkYXJrJTIwYWJzdHJhY3QlMjB0ZWNobm9sb2d5JTIwYmFja2dyb3VuZHxlbnwwfHx8Z3JlZW58MTc4MTY4NzI0Mnww&ixlib=rb-4.1.0&q=85",
+        "description": "Green digital matrix LED wall background",
+        "category": "auth_background"
+      }
+    ]
+  },
+  "testing": {
+    "data_attributes": "All interactive and key informational elements MUST include a `data-testid` attribute (e.g., `data-testid='login-submit-button'`, `data-testid='run-test-cta'`, `data-testid='project-row-item'`). Convention: kebab-case, role-based."
+  },
+  "instructions_to_main_agent": [
+    "Install Google Fonts for Azeret Mono, Geist, and IBM Plex Mono. Import them in the root layout/CSS.",
+    "Use Phosphor Icons (@phosphor-icons/react) for an angular, professional geometry matching the terminal vibe.",
+    "Implement Shadcn UI using .js/.jsx (NO TypeScript). Ensure all components are modified to have sharp edges (`rounded-none`).",
+    "Add a fixed global CSS grain/scanline overlay to the application root to enforce the hacker aesthetic globally.",
+    "For all charts, use Shadcn/Recharts but strip out distracting grid lines. Use neon green (#39FF14) for primary data series with an area gradient.",
+    "Ensure 'dark' mode is forced permanently in Tailwind (e.g., set `<html className='dark'>`). Do not implement a light mode toggle.",
+    "Add blinking cursor animations (`animate-pulse bg-[#39FF14] w-2 h-4 inline-block align-middle ml-2`) next to active page titles to enhance the terminal feel."
+  ]
+}
