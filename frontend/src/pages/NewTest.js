@@ -130,7 +130,7 @@ export default function NewTest() {
                     className="input-neon"
                   >
                     {projects.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name} — {p.domain}</option>
+                      <option key={p.id} value={p.id}>{`${p.name} — ${p.domain}`}</option>
                     ))}
                   </select>
                 </div>

@@ -289,38 +289,35 @@ async def verify_project(project_id: str, user: dict = Depends(get_current_user)
         return {"verified": True, "message": "Already verified"}
     domain = doc["domain"]
     token = doc["verify_token"]
-    try:
-        resolver = dns.resolver.Resolver()
-        resolver.lifetime = 8.0
-        candidates = [f"_resilience.{domain}", domain]
-        found = False
-        records_seen: list[str] = []
-        for candidate in candidates:
-            try:
-                answers = resolver.resolve(candidate, "TXT")
-                for r in answers:
-                    txt = b"".join(r.strings).decode("utf-8", errors="ignore")
-                    records_seen.append(f"{candidate}: {txt}")
-                    if token in txt:
-                        found = True
-                        break
-            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers):
-                continue
-            if found:
-                break
-        if not found:
-            return {
-                "verified": False,
-                "message": "TXT record not found yet (DNS may take time to propagate).",
-                "expected_token": token,
-                "expected_host": f"_resilience.{domain}",
-                "records_seen": records_seen,
-            }
-        await db.projects.update_one({"_id": doc["_id"]}, {"$set": {"verified": True}})
-        return {"verified": True, "message": "Domain ownership verified"}
-    except Exception as e:
-        logger.exception("verify failed")
-        raise HTTPException(500, f"DNS lookup failed: {e}")
+    resolver = dns.resolver.Resolver()
+    resolver.lifetime = 8.0
+    candidates = [f"_resilience.{domain}", domain]
+    found = False
+    records_seen: list[str] = []
+    for candidate in candidates:
+        try:
+            answers = resolver.resolve(candidate, "TXT")
+            for r in answers:
+                txt = b"".join(r.strings).decode("utf-8", errors="ignore")
+                records_seen.append(f"{candidate}: {txt}")
+                if token in txt:
+                    found = True
+                    break
+        except Exception as e:
+            logger.info(f"DNS lookup for {candidate} failed: {e}")
+            continue
+        if found:
+            break
+    if not found:
+        return {
+            "verified": False,
+            "message": "TXT record not found yet (DNS may take time to propagate).",
+            "expected_token": token,
+            "expected_host": f"_resilience.{domain}",
+            "records_seen": records_seen,
+        }
+    await db.projects.update_one({"_id": doc["_id"]}, {"$set": {"verified": True}})
+    return {"verified": True, "message": "Domain ownership verified"}
 
 # ---------------------------------------------------------------------------
 # k6 runner
