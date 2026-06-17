@@ -65,8 +65,23 @@ User initially uploaded a DDoS attack toolkit (`scytheinhere88/ddoscythe`). Agen
 - No login brute-force lockout
 - No per-user concurrency cap on active tests
 
+## Implemented (2026-06-17 — Session 2)
+
+### Diagnostic & Observability Update
+- ✅ **Preflight probe** (`preflight_probe()` in server.py) — single GET before k6 starts; surfaces HTTP status, server header, Cloudflare detection (`cf-ray`), and actionable advice
+- ✅ **k6 stderr ring buffer** (`_stream_stderr` + `RUNNING_TESTS[id]["log_lines"]`) — captures k6 console output line-by-line into a 500-line deque
+- ✅ **Polling logs endpoint** `GET /api/tests/{id}/log_poll?since_idx=N` returns new lines incrementally
+- ✅ **SSE logs endpoint** `GET /api/tests/{id}/logs` (text/event-stream) — kept for future
+- ✅ **Custom HTTP headers** in k6 script — `User-Agent: ResilienceLab/1.0`, Accept-*, Connection: keep-alive — prevents WAFs from instantly blocking default `k6/x.x` UA
+- ✅ **20s timeout per request** in k6 script — prevents indefinite hangs on slow/blocked targets
+- ✅ **Frontend TestRun page** now shows:
+  - Preflight banner (CF badge, status code, advice list)
+  - Live status code panel (per-second 200/4xx/5xx/NET-ERR breakdown during running)
+  - Live k6 log terminal (color-coded errors/warnings, scrollable, polled every 1.5s)
+- ✅ Verified end-to-end against `example.com` — 1107 req / 10s smoke, Cloudflare banner displayed, all live panels populated
+
 ## Backlog (Phase 3)
-- P0: SSE live log stream (per-second k6 line into UI terminal)
+- ~~P0: SSE live log stream~~ ✅ DONE (poll-based)
 - P0: Per-user concurrency cap (max 2 active tests/user)
 - P1: Pre-Launch Resilience Score — auto-chain smoke → ramp → spike → breakpoint, output A-F grade + PDF
 - P1: Health Score Badge embed (`/badge/<project>.svg`)
@@ -76,6 +91,7 @@ User initially uploaded a DDoS attack toolkit (`scytheinhere88/ddoscythe`). Agen
 - P2: Webhook alerts (Slack/Discord) on breakpoint exceeded
 - P2: Scheduled recurring tests (cron-style)
 - P2: Multi-user teams / project sharing
+- P2: TLS fingerprint rotation (legitimate variation only)
 
 ## Future safety
 - Periodic re-verification of ownership (every 90 days)

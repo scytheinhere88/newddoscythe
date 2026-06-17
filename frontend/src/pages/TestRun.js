@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import api from "@/lib/api";
-import { ArrowLeft, Square, AlertTriangle, CheckCircle2, XCircle, Activity, ShieldAlert } from "lucide-react";
+import { ArrowLeft, Square, AlertTriangle, CheckCircle2, XCircle, Activity, ShieldAlert, Cloud, Terminal } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
 
 function StatusBadge({ s }) {
@@ -32,7 +32,10 @@ export default function TestRun() {
   const [test, setTest] = useState(null);
   const [points, setPoints] = useState([]);
   const [tick, setTick] = useState(0);
+  const [logs, setLogs] = useState([]);
+  const [logIdx, setLogIdx] = useState(0);
   const pollRef = useRef(null);
+  const logPollRef = useRef(null);
 
   const fetchAll = async () => {
     try {
@@ -48,8 +51,34 @@ export default function TestRun() {
     }
   };
 
+  const fetchLogs = async () => {
+    try {
+      const r = await api.get(`/tests/${id}/log_poll?since_idx=${logIdx}`);
+      if (r.data.lines && r.data.lines.length > 0) {
+        setLogs((prev) => [...prev, ...r.data.lines].slice(-200));
+        setLogIdx(r.data.next_idx);
+      }
+      if (!r.data.running) {
+        if (r.data.final_tail && logs.length === 0) {
+          // Test already finished by the time we started polling — show stored tail
+          const tailLines = r.data.final_tail.split("\n").filter(Boolean).map((text) => ({
+            ts: "", text,
+          }));
+          setLogs(tailLines.slice(-200));
+        }
+        if (logPollRef.current) {
+          clearInterval(logPollRef.current);
+          logPollRef.current = null;
+        }
+      }
+    } catch (e) {
+      // silent — endpoint may 404 briefly between create and start
+    }
+  };
+
   useEffect(() => {
-    fetchAll();
+    // Defer initial state updates to next tick to satisfy react-hooks/set-state-in-effect
+    Promise.resolve().then(() => { fetchAll(); fetchLogs(); });
     pollRef.current = setInterval(async () => {
       const status = await fetchAll();
       setTick((x) => x + 1);
@@ -57,8 +86,12 @@ export default function TestRun() {
         clearInterval(pollRef.current);
       }
     }, 1500);
-    return () => clearInterval(pollRef.current);
-    // eslint-disable-next-line
+    logPollRef.current = setInterval(fetchLogs, 1500);
+    return () => {
+      clearInterval(pollRef.current);
+      if (logPollRef.current) clearInterval(logPollRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   const abort = async () => {
@@ -124,6 +157,50 @@ export default function TestRun() {
           )}
         </div>
       </div>
+
+      {/* PREFLIGHT BANNER */}
+      {test.preflight && (
+        <div className="panel p-4 mb-4" data-testid="preflight-banner">
+          <div className="flex items-start gap-3">
+            <div className="font-mono-display text-[10px] tracking-widest text-gray-500 uppercase mt-0.5 shrink-0">// PREFLIGHT</div>
+            <div className="flex-1 min-w-0">
+              {test.preflight.reachable ? (
+                <div className="flex flex-wrap items-center gap-2 mb-1">
+                  <span className={`badge-neon ${
+                    test.preflight.status_code >= 500 ? "badge-error" :
+                    test.preflight.status_code >= 400 ? "badge-warn" : ""
+                  }`} data-testid="preflight-status">
+                    HTTP {test.preflight.status_code}
+                  </span>
+                  {test.preflight.cloudflare && (
+                    <span className="badge-neon badge-warn inline-flex items-center gap-1" data-testid="preflight-cloudflare">
+                      <Cloud size={10} /> CLOUDFLARE
+                    </span>
+                  )}
+                  {test.preflight.server && (
+                    <span className="font-mono-display text-[10px] text-gray-500">server: {test.preflight.server}</span>
+                  )}
+                  {test.preflight.cf_ray && (
+                    <span className="font-mono-display text-[10px] text-gray-500">cf-ray: {test.preflight.cf_ray.slice(0, 16)}</span>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="badge-neon badge-error" data-testid="preflight-unreachable">UNREACHABLE</span>
+                  <span className="font-mono-display text-[11px] text-[#ef4444]">{test.preflight.error}</span>
+                </div>
+              )}
+              {test.preflight.advice && test.preflight.advice.length > 0 && (
+                <ul className="text-xs text-gray-400 mt-2 space-y-1" data-testid="preflight-advice">
+                  {test.preflight.advice.map((a, i) => (
+                    <li key={i} className="flex gap-2"><span className="text-[#fbbf24]">⚠</span><span>{a}</span></li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* LIVE METRICS */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
@@ -197,6 +274,58 @@ export default function TestRun() {
           </AreaChart>
         </ResponsiveContainer>
       </div>
+
+      {/* LIVE STATUS CODES (during run) */}
+      {isLive && lastPoint && lastPoint.status_codes && Object.keys(lastPoint.status_codes).length > 0 && (
+        <div className="panel p-5 mb-4" data-testid="live-status-codes">
+          <div className="font-mono-display text-[10px] tracking-widest text-gray-500 uppercase mb-3">// LIVE_STATUS_CODES (this second)</div>
+          <div className="flex flex-wrap gap-3 font-mono-display text-sm">
+            {Object.entries(lastPoint.status_codes).map(([code, count]) => (
+              <div key={code} className="border border-[#1f2937] px-3 py-2">
+                <span className={`mr-2 ${
+                  code.startsWith("2") ? "text-[#39ff14]" :
+                  code.startsWith("3") ? "text-[#60a5fa]" :
+                  code.startsWith("4") ? "text-[#fbbf24]" :
+                  code === "0" || code === "?" ? "text-[#ef4444]" :
+                  "text-[#ef4444]"
+                }`}>{code === "0" || code === "?" ? "NET-ERR" : code}</span>
+                <span className="text-gray-400">{count.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* LIVE LOGS (k6 stderr stream) */}
+      {(isLive || logs.length > 0) && (
+        <div className="panel p-5 mb-4" data-testid="live-logs">
+          <div className="flex items-center justify-between mb-3">
+            <div className="font-mono-display text-[10px] tracking-widest text-gray-500 uppercase flex items-center gap-2">
+              <Terminal size={12} /> // K6_LIVE_LOG
+            </div>
+            {isLive && <span className="font-mono-display text-[10px] text-[#39ff14]"><span className="pulse-dot mr-2" />STREAMING</span>}
+          </div>
+          <pre className="terminal max-h-48 overflow-auto text-[11px] whitespace-pre-wrap leading-relaxed" data-testid="live-log-output">
+            {logs.length === 0 ? (
+              <span className="text-gray-600">
+                {isLive
+                  ? "[runner] Waiting for k6 to emit output… (first metrics arrive in 1–3s)"
+                  : "[runner] No log output captured."}
+              </span>
+            ) : (
+              logs.map((l, i) => (
+                <div key={i} className={
+                  /error|fail|refused|timeout|denied/i.test(l.text) ? "text-[#ef4444]" :
+                  /warn/i.test(l.text) ? "text-[#fbbf24]" :
+                  "text-gray-400"
+                }>
+                  {l.text}
+                </div>
+              ))
+            )}
+          </pre>
+        </div>
+      )}
 
       {/* Summary + Recos */}
       {test.summary && test.status !== "running" && test.status !== "queued" && (

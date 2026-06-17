@@ -13,6 +13,7 @@ import secrets
 import asyncio
 import logging
 import tempfile
+import collections
 import psutil
 import httpx
 from datetime import datetime, timezone, timedelta
@@ -21,6 +22,7 @@ from typing import List, Optional, Literal
 import dns.resolver
 from bson import ObjectId
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from motor.motor_asyncio import AsyncIOMotorClient
 from starlette.middleware.cors import CORSMiddleware
@@ -31,6 +33,42 @@ from ipv6_rotator import (
     add_addresses,
     remove_addresses,
 )
+
+# ---------------------------------------------------------------------------
+# Pre-flight target probe — detects Cloudflare/WAF & reachability before k6
+# ---------------------------------------------------------------------------
+async def preflight_probe(url: str) -> dict:
+    """Single GET to verify reachability and identify edge protections.
+    Returns dict with reachable, status_code, cloudflare flag, advice."""
+    out: dict = {"reachable": False, "url": url}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=False, verify=False,
+                                     headers={"User-Agent": "ResilienceLab-Probe/1.0"}) as h:
+            r = await h.get(url)
+        out["reachable"] = True
+        out["status_code"] = r.status_code
+        out["server"] = r.headers.get("server", "")
+        out["cf_ray"] = r.headers.get("cf-ray", "")
+        out["cloudflare"] = bool(out["cf_ray"]) or "cloudflare" in out["server"].lower()
+        advice = []
+        if out["status_code"] >= 400:
+            advice.append(f"Probe got HTTP {out['status_code']} — load test will likely produce the same. Check origin or unblock probe UA.")
+        if out["cloudflare"]:
+            advice.append(
+                "Target is behind Cloudflare. To test your origin's real capacity, whitelist this VPS's IPv4 AND IPv6 in Cloudflare → Security → WAF → Skip. "
+                "Otherwise CF will mitigate the burst and you'll see 403/503/challenge — that measures CF's edge, not your origin."
+            )
+        out["advice"] = advice
+    except httpx.ConnectError as e:
+        out["error"] = f"Connection failed: {e}"
+        out["advice"] = ["Cannot connect to target. Check DNS, firewall, and outbound network from VPS."]
+    except httpx.TimeoutException:
+        out["error"] = "Connection timed out (>8s)"
+        out["advice"] = ["Target did not respond within 8 seconds. Target may be down or VPS network is slow."]
+    except Exception as e:
+        out["error"] = str(e)
+        out["advice"] = ["Unexpected probe error — see error field."]
+    return out
 
 # ---------------------------------------------------------------------------
 # Config
@@ -487,7 +525,14 @@ import { check } from 'k6';
 
 export const options = __OPTIONS__;
 
-const headers = __HEADERS__;
+const userHeaders = __HEADERS__;
+const headers = Object.assign({
+  'User-Agent': 'ResilienceLab/1.0 (+legitimate load test)',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.5',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Connection': 'keep-alive',
+}, userHeaders);
 const body = __BODY__;
 const targetUrl = __URL__;
 const method = __METHOD__;
@@ -506,9 +551,9 @@ export default function () {
   const url = pickUrl();
   let res;
   if (method === 'GET' || method === 'HEAD') {
-    res = http.request(method, url, null, { headers });
+    res = http.request(method, url, null, { headers, timeout: '20s' });
   } else {
-    res = http.request(method, url, body || null, { headers });
+    res = http.request(method, url, body || null, { headers, timeout: '20s' });
   }
   check(res, { 'status<500': (r) => r.status < 500 });
 }
@@ -657,6 +702,26 @@ async def stream_k6_output(test_id: str, proc: asyncio.subprocess.Process):
     if cur_bucket is not None:
         await flush(cur_bucket)
 
+async def _stream_stderr(test_id: str, proc: asyncio.subprocess.Process):
+    """Read k6 stderr line-by-line into a ring buffer so the UI can tail it live."""
+    entry = RUNNING_TESTS.get(test_id)
+    if entry is None:
+        return
+    while True:
+        try:
+            line = await proc.stderr.readline()
+        except Exception:
+            break
+        if not line:
+            break
+        text = line.decode("utf-8", errors="ignore").rstrip()
+        if not text:
+            continue
+        entry["log_lines"].append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "text": text,
+        })
+
 async def run_k6_subprocess(test_id: str, script: str, ipv6_pool: Optional[list] = None,
                             ipv6_iface: Optional[str] = None):
     tmpdir = tempfile.mkdtemp(prefix="k6_")
@@ -676,15 +741,28 @@ async def run_k6_subprocess(test_id: str, script: str, ipv6_pool: Optional[list]
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
     )
-    RUNNING_TESTS[test_id] = {"proc": proc, "started_at": datetime.now(timezone.utc).isoformat()}
+    RUNNING_TESTS[test_id] = {
+        "proc": proc,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "log_lines": collections.deque(maxlen=500),
+    }
+    # Seed initial log line so frontend immediately sees activity
+    RUNNING_TESTS[test_id]["log_lines"].append({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "text": f"[runner] k6 subprocess started — cmd: {' '.join(cmd[:5])} ...",
+    })
     await db.tests.update_one({"_id": ObjectId(test_id)},
                               {"$set": {"status": "running",
                                         "started_at": datetime.now(timezone.utc).isoformat()}})
     err_tail = ""
+    stderr_task = asyncio.create_task(_stream_stderr(test_id, proc))
     try:
         await stream_k6_output(test_id, proc)
         rc = await proc.wait()
-        err_tail = (await proc.stderr.read()).decode("utf-8", errors="ignore")[-2000:]
+        await stderr_task
+        # Compose log tail from captured ring buffer
+        captured = list(RUNNING_TESTS.get(test_id, {}).get("log_lines", []))
+        err_tail = "\n".join(line["text"] for line in captured)[-4000:]
         status = "completed" if rc == 0 else "failed"
         await finalize_test(test_id, status, err_tail)
     except Exception as e:
@@ -839,6 +917,9 @@ async def create_test(scenario: ScenarioIn, user: dict = Depends(get_current_use
     path = scenario.target_path if scenario.target_path.startswith("/") else "/" + scenario.target_path
     full_url = f"https://{domain}{path}"
 
+    # Pre-flight probe — surface CF/WAF and reachability issues before k6 starts
+    probe = await preflight_probe(full_url)
+
     doc = {
         "user_id": user["id"],
         "project_id": scenario.project_id,
@@ -853,6 +934,7 @@ async def create_test(scenario: ScenarioIn, user: dict = Depends(get_current_use
         "recommendations": [],
         "ipv6_pool_size": 0,
         "ipv6_mode": "off",
+        "preflight": probe,
     }
     res = await db.tests.insert_one(doc)
     test_id = str(res.inserted_id)
@@ -932,7 +1014,71 @@ async def get_test(test_id: str, user: dict = Depends(get_current_user)):
         "log_tail": r.get("log_tail", ""),
         "ipv6_pool_size": r.get("ipv6_pool_size", 0),
         "ipv6_mode": r.get("ipv6_mode", "off"),
+        "preflight": r.get("preflight"),
     }
+
+@api.get("/tests/{test_id}/log_poll")
+async def poll_test_logs(test_id: str, since_idx: int = 0,
+                         user: dict = Depends(get_current_user)):
+    """Poll-based log tail for the running k6 process.
+    Returns log lines from the ring buffer + final tail if finished."""
+    # Verify test ownership
+    t = await db.tests.find_one({"_id": ObjectId(test_id), "user_id": user["id"]})
+    if not t:
+        raise HTTPException(404, "Test not found")
+    entry = RUNNING_TESTS.get(test_id)
+    if entry:
+        all_lines = list(entry.get("log_lines", []))
+        new_lines = all_lines[since_idx:]
+        return {
+            "running": True,
+            "next_idx": len(all_lines),
+            "lines": new_lines,
+        }
+    # Finished — return stored log_tail
+    tail = t.get("log_tail", "")
+    return {
+        "running": False,
+        "next_idx": since_idx,
+        "lines": [],
+        "final_tail": tail,
+    }
+
+@api.get("/tests/{test_id}/logs")
+async def stream_test_logs(test_id: str, request: Request):
+    # Manual auth (SSE clients can't easily set headers, rely on cookie)
+    try:
+        await get_current_user(request)
+    except HTTPException:
+        raise
+    # Ensure test exists & belongs to user already validated implicitly by RUNNING_TESTS check below
+
+    async def gen():
+        last_idx = 0
+        end_announced = False
+        # Emit a hello so the client knows the stream is alive
+        yield f"data: {json.dumps({'type': 'open', 'test_id': test_id})}\n\n"
+        for _ in range(900):  # cap at ~15 min
+            entry = RUNNING_TESTS.get(test_id)
+            if entry is None:
+                if not end_announced:
+                    # Test finished — flush log_tail from DB
+                    t = await db.tests.find_one({"_id": ObjectId(test_id)})
+                    final_tail = (t or {}).get("log_tail", "") if t else ""
+                    if final_tail:
+                        yield f"data: {json.dumps({'type': 'final', 'text': final_tail})}\n\n"
+                    yield f"data: {json.dumps({'type': 'end'})}\n\n"
+                    end_announced = True
+                break
+            lines = list(entry.get("log_lines", []))
+            for line in lines[last_idx:]:
+                yield f"data: {json.dumps({'type': 'line', 'ts': line['ts'], 'text': line['text']})}\n\n"
+            last_idx = len(lines)
+            await asyncio.sleep(1)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
 
 @api.get("/tests/{test_id}/metrics")
 async def get_test_metrics(test_id: str, since_ts: Optional[int] = None,
